@@ -1,0 +1,1809 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCode · agent monitor</title>
+<style>
+  :root {
+    --bg:         #080b12;
+    --panel:      rgba(11, 14, 23, .94);
+    --border:     rgba(90, 120, 200, .14);
+    --border-hi:  rgba(122, 162, 247, .30);
+    --text:       #c8d3f5;
+    --muted:      #7b86b8;
+    --dim:        #4a5278;
+    --accent:     #7aa2f7;
+    --running:    #9ece6a;
+    --waiting:    #e0af68;
+    --idle:       #5e6a98;
+    --failed:     #f7768e;
+    --interrupted:#bb9af7;
+    --new:        #7dcfff;
+    --dir:        #7aa2f7;
+    --task:       #73daca;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background:
+      radial-gradient(ellipse 1100px 650px at 14% 4%, rgba(122,162,247,.07), transparent 62%),
+      radial-gradient(ellipse 900px 900px at 90% 94%, rgba(158,206,106,.05), transparent 58%),
+      var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #stage {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    cursor: grab; user-select: none; touch-action: none;
+  }
+  #stage:active { cursor: grabbing; }
+
+  /* ── topbar ────────────────────────────────────────────────────── */
+  #topbar {
+    position: fixed; z-index: 20; top: 0; left: 0; right: 0; height: 52px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 0 20px;
+    background: rgba(8, 11, 18, .90);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(24px);
+    pointer-events: none;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--dim);
+  }
+  .live-dot.live {
+    background: var(--running);
+    box-shadow: 0 0 0 0 rgba(158,206,106,.5);
+    animation: livedot 2.2s ease-out infinite;
+  }
+  .live-dot.stale   { background: var(--waiting); }
+  .live-dot.offline { background: var(--failed); }
+  @keyframes livedot {
+    0%   { box-shadow: 0 0 0 0   rgba(158,206,106,.5); }
+    70%  { box-shadow: 0 0 0 7px rgba(158,206,106,0); }
+    100% { box-shadow: 0 0 0 0   rgba(158,206,106,0); }
+  }
+  .brand .title { font-weight: 600; font-size: 13.5px; letter-spacing: .01em; }
+  .brand .sub   { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .chips { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(122,162,247,.04);
+    color: var(--muted); font-size: 11px; white-space: nowrap;
+  }
+  .chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chip.running { border-color: rgba(158,206,106,.22); background: rgba(158,206,106,.05); }
+  .chip.running b { color: var(--running); }
+  .chip.waiting { border-color: rgba(224,175,104,.22); background: rgba(224,175,104,.05); }
+  .chip.waiting b { color: var(--waiting); }
+
+  /* ── legend ────────────────────────────────────────────────────── */
+  #legend {
+    position: fixed; z-index: 15; left: 18px; bottom: 18px;
+    display: flex; flex-direction: column; gap: 7px;
+    padding: 10px 14px;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--panel); backdrop-filter: blur(16px);
+    color: var(--dim); font-size: 11px;
+  }
+  #legend span { display: inline-flex; align-items: center; gap: 5px; }
+  #legend i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
+  #legend .l-running { color: var(--running); }
+  #legend .l-waiting { color: var(--waiting); }
+  #legend .l-idle    { color: var(--idle); }
+  #legend .l-failed  { color: var(--failed); }
+  #legend .l-new     { color: var(--new); }
+  #legend .l-task    { color: var(--task); }
+
+  /* ── working-now strip ─────────────────────────────────────────── */
+  #worknow {
+    position: fixed; z-index: 15; top: 64px; left: 18px;
+    display: flex; flex-direction: column; gap: 5px;
+    max-width: min(560px, calc(100vw - 36px));
+  }
+  #worknow .wn-head {
+    color: var(--dim); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .12em;
+  }
+  #worknow button {
+    display: flex; align-items: baseline; gap: 8px; min-width: 0;
+    padding: 5px 11px; border-radius: 9px;
+    border: 1px solid rgba(115,218,202,.22);
+    background: rgba(11,14,23,.88); backdrop-filter: blur(14px);
+    color: var(--text); font: inherit; font-size: 11.5px; text-align: left;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #worknow button:hover { border-color: rgba(115,218,202,.5); background: rgba(115,218,202,.06); }
+  #worknow .wn-chain { white-space: nowrap; flex: none; }
+  #worknow .wn-chain .holder { color: var(--task); font-weight: 600; }
+  #worknow .wn-act {
+    color: var(--muted); min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: "Cascadia Mono", Consolas, monospace; font-size: 10.5px;
+  }
+
+  /* ── today panel ───────────────────────────────────────────────── */
+  #today {
+    position: fixed; z-index: 15; right: 18px; bottom: 18px;
+    min-width: 210px; padding: 14px 16px 13px;
+    border: 1px solid var(--border); border-radius: 16px;
+    background: var(--panel); backdrop-filter: blur(20px);
+    box-shadow: 0 16px 48px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.03);
+  }
+  .today-head {
+    display: flex; justify-content: space-between; gap: 12px;
+    color: var(--dim); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .12em;
+  }
+  .today-value {
+    margin-top: 4px; font-size: 28px; font-weight: 700;
+    letter-spacing: -.03em; color: var(--text);
+    font-variant-numeric: tabular-nums; line-height: 1;
+  }
+  .today-value small { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+  .today-sub { margin-top: 6px; color: var(--muted); font-size: 11px; }
+  .today-sub.dim { margin-top: 3px; color: var(--dim); font-size: 10.5px; }
+
+  /* ── detail panel ──────────────────────────────────────────────── */
+  #detail {
+    position: fixed; z-index: 30;
+    top: 64px; right: 16px; bottom: 130px;
+    width: 360px; padding: 0;
+    border: 1px solid var(--border); border-radius: 16px;
+    background: rgba(9, 12, 20, .97);
+    backdrop-filter: blur(24px);
+    box-shadow: 0 28px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.04);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    transform: translateX(calc(100% + 28px)); opacity: 0;
+    transition: transform .22s cubic-bezier(.16,1,.3,1), opacity .22s ease;
+  }
+  #detail.open { transform: none; opacity: 1; }
+
+  #detailClose {
+    position: absolute; top: 12px; right: 12px; z-index: 2;
+    width: 26px; height: 26px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: transparent; color: var(--dim); font-size: 16px; line-height: 1;
+    cursor: pointer; transition: color .15s, border-color .15s, background .15s;
+  }
+  #detailClose:hover { color: var(--text); border-color: var(--border-hi); background: rgba(122,162,247,.08); }
+
+  #detailBody { overflow-y: auto; flex: 1; padding: 20px 20px 24px; }
+  #detailBody::-webkit-scrollbar { width: 4px; }
+  #detailBody::-webkit-scrollbar-track { background: transparent; }
+  #detailBody::-webkit-scrollbar-thumb { background: rgba(90,120,200,.2); border-radius: 2px; }
+  #detailBody::-webkit-scrollbar-thumb:hover { background: rgba(122,162,247,.35); }
+
+  .d-kicker { color: var(--dim); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .13em; }
+  #detail h2 { margin: 5px 0 0; font-size: 17px; line-height: 1.3; word-break: break-word; }
+  .d-subhead {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-top: 8px; padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .d-since { font-size: 11px; color: var(--dim); }
+
+  .st {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 10px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; border: 1px solid currentColor;
+  }
+  .st.running     { color: var(--running);     background: rgba(158,206,106,.08); }
+  .st.waiting     { color: var(--waiting);     background: rgba(224,175,104,.08); }
+  .st.idle        { color: var(--idle);        background: rgba(94,106,152,.07); }
+  .st.failed      { color: var(--failed);      background: rgba(247,118,142,.08); }
+  .st.interrupted { color: var(--interrupted); background: rgba(187,154,247,.08); }
+  .st.new         { color: var(--new);         background: rgba(125,207,255,.06); }
+
+  #detail dl { display: grid; grid-template-columns: 74px 1fr; gap: 0; margin: 14px 0; }
+  #detail dt, #detail dd {
+    padding: 5px 0; margin: 0;
+    border-bottom: 1px solid rgba(90,120,200,.07);
+    font-size: 11.5px;
+  }
+  #detail dt { color: var(--dim); font-size: 10.5px; padding-right: 8px; }
+  #detail dd { word-break: break-all; }
+
+  .mono  { font-family: "Cascadia Mono", Consolas, monospace; font-size: 10.5px; }
+  .small { font-size: 10.5px; }
+  .d-path { color: var(--muted); }
+
+  .copy-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 18px; margin-left: 5px;
+    border: 1px solid var(--border); border-radius: 5px;
+    background: transparent; color: var(--dim);
+    font-size: 11px; cursor: pointer; vertical-align: middle;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .copy-btn:hover { color: var(--accent); border-color: var(--border-hi); background: rgba(122,162,247,.06); }
+  .copy-btn.copied { color: var(--running); border-color: rgba(158,206,106,.4); }
+
+  .d-section {
+    margin-top: 18px; padding-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 600; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim);
+  }
+  .tokgrid {
+    display: grid; grid-template-columns: repeat(3,1fr);
+    gap: 6px; margin-top: 10px;
+  }
+  .tokgrid > div {
+    padding: 8px 9px; border-radius: 9px;
+    border: 1px solid var(--border);
+    background: rgba(122,162,247,.03);
+  }
+  .tokgrid b {
+    display: block; font-size: 13px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .tokgrid span { color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .09em; }
+
+  .d-prompt {
+    margin-top: 8px; padding: 10px 12px;
+    border-left: 2px solid rgba(122,162,247,.3);
+    border-radius: 0 9px 9px 0;
+    background: rgba(122,162,247,.04);
+    color: var(--muted); font-size: 11.5px; line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  .kid {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; margin-top: 5px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 9px;
+    background: transparent; color: var(--text);
+    font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .kid:hover { border-color: var(--border-hi); background: rgba(122,162,247,.05); }
+
+  /* ── stale banner ──────────────────────────────────────────────── */
+  #stale {
+    position: fixed; z-index: 25; top: 60px; left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 16px; border-radius: 999px;
+    border: 1px solid rgba(224,175,104,.4);
+    background: rgba(40,30,14,.95);
+    color: var(--waiting); font-size: 11.5px; white-space: nowrap;
+  }
+  .hidden { display: none !important; }
+
+  /* ── svg nodes ─────────────────────────────────────────────────── */
+  .node { cursor: grab; color: var(--idle); }
+  .node:active { cursor: grabbing; }
+  .node .bubble { fill: rgba(94,106,152,.09); stroke: currentColor; stroke-width: 1.3; }
+
+  .node .halo   { fill: none; stroke: currentColor; opacity: 0; }
+
+  /* sessions and subagents are drawn as faces; labels sit under the face */
+  .node.has-face .bubble, .node.has-face .halo { display: none; }
+  .node.has-face text {
+    paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+  }
+  .node.has-face .name { fill: #e6ebff; }
+  .node.has-face .meta { fill: #9aa3d0; }
+  .node.has-face .tok  { fill: #6a74a6; }
+  .node .face-ball { stroke-width: 2.5; }
+  .node.selected .face-ball { stroke-width: 4; filter: drop-shadow(0 0 8px rgba(122,162,247,.75)); }
+  .node .face-sign { font-weight: 800; font-family: "Segoe UI", system-ui, sans-serif; stroke: none; }
+
+  .node.state-running     { color: var(--running); }
+  .node.state-running .bubble  { fill: rgba(158,206,106,.11); }
+  .node.state-waiting     { color: var(--waiting); }
+  .node.state-waiting .bubble  { fill: rgba(224,175,104,.11); }
+  .node.state-idle        { color: var(--idle); }
+  .node.state-idle .bubble     { fill: rgba(94,106,152,.07); }
+  .node.state-failed      { color: var(--failed); }
+  .node.state-failed .bubble   { fill: rgba(247,118,142,.11); }
+  .node.state-interrupted { color: var(--interrupted); }
+  .node.state-interrupted .bubble { fill: rgba(187,154,247,.10); }
+  .node.state-new         { color: var(--new); }
+  .node.state-new .bubble { fill: rgba(125,207,255,.05); stroke-dasharray: 3 5; }
+
+  .node.state-running .halo { animation: halo 2.4s ease-out infinite; }
+  @keyframes halo {
+    0%   { opacity: .55; stroke-width: 2; }
+    70%  { opacity: 0;   stroke-width: 12; }
+    100% { opacity: 0;   stroke-width: 12; }
+  }
+  .node.state-waiting .halo { opacity: .5; stroke-dasharray: 3 6; }
+
+  .node.kind-directory { color: var(--dir); }
+  .node.kind-directory .bubble {
+    fill: rgba(122,162,247,.04);
+    stroke: rgba(122,162,247,.28);
+    stroke-dasharray: 2 8;
+  }
+
+  .node .name { fill: #d4dcff; font-weight: 600; }
+  .node .meta { fill: #8891c4; }
+  .node .tok  { fill: #5a6494; }
+  .node.kind-directory .name { fill: #c8d3ff; }
+  .node.kind-directory .meta { fill: #6870a4; }
+
+  .node.selected .bubble { stroke-width: 2.5; filter: drop-shadow(0 0 10px currentColor); }
+
+  .link { stroke: rgba(100,130,210,.11); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .link.live { stroke: rgba(158,206,106,.5); stroke-dasharray: 5 5; animation: dash 1s linear infinite; }
+  .link.handoff { stroke: rgba(115,218,202,.7); stroke-width: 1.6; stroke-dasharray: 6 4; animation: dash .8s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -20; } }
+
+  /* what the agent is doing right now, under the bubble */
+  .node .act {
+    fill: #9aa6d8; font-family: "Cascadia Mono", Consolas, monospace;
+    paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+  }
+  .node.holder .act { fill: var(--task); }
+
+  /* the agent currently holding a task */
+  .node .ring { fill: none; stroke: var(--task); stroke-width: 2; stroke-dasharray: 10 6; opacity: 0; }
+  .node.holder .ring { opacity: .9; animation: spin 6s linear infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* an agent that handed its work to a subagent and is waiting on it */
+  .node.delegating .bubble { fill-opacity: .45; stroke-dasharray: 4 3; }
+  .node.delegating .halo { animation: none; opacity: 0; }
+
+  /* task tokens travelling between bubbles */
+  .token { pointer-events: none; }
+  .token .glow { fill: var(--task); opacity: .22; animation: tokpulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  .token .core { fill: var(--task); stroke: #0b1a18; stroke-width: 1.2; }
+  .token text {
+    fill: #d8fff7; font-size: 10.5px; font-weight: 600;
+    paint-order: stroke; stroke: var(--bg); stroke-width: 3.5px; stroke-linejoin: round;
+  }
+  .token.result-failed .glow, .token.result-failed .core { fill: var(--failed); }
+  .token.result-failed text { fill: #ffd6de; }
+  .token.result-interrupted .glow, .token.result-interrupted .core { fill: var(--interrupted); }
+  .token.result-done .glow, .token.result-done .core { fill: var(--running); }
+  .token.result-done text { fill: #e6ffd0; }
+  @keyframes tokpulse { 50% { transform: scale(1.35); opacity: .1; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .node.state-running .halo, .link.live, .link.handoff, .live-dot.live,
+    .node.holder .ring, .token .glow { animation: none; }
+    #detail { transition: none; }
+  }
+  @media (max-width: 720px) {
+    .brand .sub { display: none; }
+    #legend { max-width: 58vw; }
+    #detail { width: calc(100% - 28px); top: 62px; bottom: 148px; }
+    .today-head span:last-child { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <span class="live-dot" id="liveDot"></span>
+    <span class="title">agent monitor</span>
+    <span class="sub" id="serverInfo">connecting…</span>
+  </div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<svg id="stage" aria-label="OpenCode session map"></svg>
+
+<div id="legend">
+  <span style="color:#ffd23f"><i></i>thinking · working</span>
+  <span style="color:#ffb35c"><i></i>needs approval</span>
+  <span style="color:#a3e070"><i></i>just finished</span>
+  <span style="color:#ff8fa1"><i></i>failed</span>
+  <span style="color:#c7a6ff"><i></i>interrupted</span>
+  <span style="color:#b4bce0"><i></i>idle</span>
+  <span class="l-task"><i></i>task · handoff</span>
+</div>
+
+<div id="worknow" class="hidden"></div>
+
+<div id="today" title="Token usage since local midnight. Cache reads are listed separately.">
+  <div class="today-head"><span>today</span><span id="todayDate"></span></div>
+  <div class="today-value" id="todayValue">—</div>
+  <div class="today-sub" id="todaySub">no data yet</div>
+  <div class="today-sub dim" id="todayCache"></div>
+</div>
+
+<aside id="detail" aria-live="polite">
+  <button id="detailClose" aria-label="close">×</button>
+  <div id="detailBody"></div>
+</aside>
+
+<div id="stale" class="hidden">OpenCode unreachable — showing last snapshot</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script>
+"use strict";
+
+const SVG = d3.select("#stage");
+const linkLayer = SVG.append("g").attr("class", "links");
+const nodeLayer = SVG.append("g").attr("class", "nodes");
+const tokenLayer = SVG.append("g").attr("class", "tokens");
+
+const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const TOKEN_OUT_MS = REDUCED_MOTION ? 0 : 1100;
+const TOKEN_BACK_MS = REDUCED_MOTION ? 0 : 1300;
+const TOKEN_LINGER_MS = REDUCED_MOTION ? 1500 : 700;
+const ARROW = "→";
+
+let W = innerWidth;
+let H = innerHeight;
+
+const view = {
+  data: null,
+  nodes: [],
+  links: [],
+  byId: new Map(),
+  sim: null,
+  selected: null,
+  hashHandled: false,
+  handoffs: null,          // Map key -> active handoff; null until the first snapshot
+  tokens: new Map(),       // Map key -> token being drawn (out / rest / back)
+  holders: new Set(),      // node ids currently holding a task
+  delegating: new Map(),   // node id -> [child agent names]
+};
+
+let nodeSel = null;
+let linkSel = null;
+
+const zoom = d3.zoom()
+  .scaleExtent([0.2, 2.6])
+  .on("zoom", (event) => {
+    linkLayer.attr("transform", event.transform);
+    nodeLayer.attr("transform", event.transform);
+    tokenLayer.attr("transform", event.transform);
+  });
+
+SVG.call(zoom).on("dblclick.zoom", null);
+SVG.on("dblclick", () => fitView());
+
+const drag = d3.drag()
+  .on("start", (event, d) => {
+    event.sourceEvent.stopPropagation();
+    if (!event.active) view.sim.alphaTarget(0.3).restart();
+    d.fx = d.x;
+    d.fy = d.y;
+  })
+  .on("drag", (event, d) => {
+    const t = d3.zoomTransform(SVG.node());
+    d.fx += event.dx / t.k;
+    d.fy += event.dy / t.k;
+  })
+  .on("end", (event, d) => {
+    if (!event.active) view.sim.alphaTarget(0);
+    if (d.kind !== "directory") { d.fx = null; d.fy = null; }
+  });
+
+/* ---------------------------------------------------------------- helpers -- */
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function fmtTok(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+
+function fmtDur(ms) {
+  const s = Math.max(0, Math.floor((ms || 0) / 1000));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m " + String(s % 60).padStart(2, "0") + "s";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h " + String(m % 60).padStart(2, "0") + "m";
+  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function fmtDate(ms) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString([], {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+function fmtMoney(v) {
+  const n = Number(v) || 0;
+  return "$" + n.toFixed(n > 0 && n < 0.01 ? 4 : 2);
+}
+
+function truncate(text, max) {
+  const s = String(text == null ? "" : text);
+  if (s.length <= max) return s;
+  return s.slice(0, Math.max(1, max - 1)).trimEnd() + "…";
+}
+
+function esc(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+/* ------------------------------------------------------------ flatten ---- */
+
+function flatten(data) {
+  const nodes = [];
+  const links = [];
+
+  for (const dir of data.directories) {
+    const dnode = {
+      id: "dir:" + dir.id,
+      kind: "directory",
+      r: 92,
+      label: dir.label,
+      dirData: dir,
+      parent: null,
+    };
+    nodes.push(dnode);
+
+    const walk = (session, parent) => {
+      const isSub = !!session.parentId;
+
+      const node = {
+        id: session.id,
+        kind: isSub ? "subagent" : "session",
+        r: isSub ? 28 : 48,
+        data: session,
+        dir: dnode,
+        parent: parent,
+      };
+
+      nodes.push(node);
+      links.push({
+        key: (parent ? parent.id : dnode.id) + "->" + session.id,
+        source: parent ? parent.id : dnode.id,
+        target: session.id,
+        live: session.state === "running",
+      });
+
+      for (const child of session.children || []) walk(child, node);
+    };
+
+    for (const session of dir.sessions || []) walk(session, null);
+  }
+
+  return { nodes, links };
+}
+
+function placeDirectories(nodes) {
+  const dirs = nodes.filter((n) => n.kind === "directory");
+  const n = dirs.length;
+  if (!n) return;
+
+  const cx = W / 2;
+  const cy = H / 2 + 12;
+  const ring = n <= 1 ? 0 : Math.min(W, H) * (n <= 4 ? 0.25 : n <= 8 ? 0.32 : 0.38);
+
+  dirs.forEach((d, i) => {
+    if (Number.isFinite(d.fx)) return;
+    const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+    d.fx = n === 1 ? cx : cx + Math.cos(angle) * ring;
+    d.fy = n === 1 ? cy : cy + Math.sin(angle) * ring;
+    d.x = d.fx;
+    d.y = d.fy;
+  });
+}
+
+function xTarget(d) {
+  if (d.kind === "directory") return d.fx;
+  if (d.parent) return d.parent.x;
+  return d.dir ? d.dir.fx : W / 2;
+}
+
+function yTarget(d) {
+  if (d.kind === "directory") return d.fy;
+  if (d.parent) return d.parent.y;
+  return d.dir ? d.dir.fy : H / 2;
+}
+
+function xyStrength(d) {
+  return d.kind === "directory" ? 0 : 0.045;
+}
+
+/* -------------------------------------------------------------- labels --- */
+
+function nodeGeometry(d) {
+  if (d.kind === "directory") return { name: -8, meta: 13, tok: 99, act: 99 };
+  // Faces fill the circle, so their labels sit underneath.
+  if (d.kind === "subagent") return { name: d.r + 15, meta: d.r + 27, tok: 0, act: d.r + 39 };
+  return { name: d.r + 17, meta: d.r + 30, tok: d.r + 42, act: d.r + 54 };
+}
+
+function labelParts(d) {
+  if (d.kind === "directory") {
+    return [
+      truncate(d.label, 15),
+      truncate(
+        d.dirData.runningCount + " running · " +
+        d.dirData.sessionCount + " session" + (d.dirData.sessionCount === 1 ? "" : "s"),
+        30
+      ),
+      "",
+    ];
+  }
+
+  const s = d.data;
+  const t = s.tokens || {};
+  const stateText = view.delegating.has(d.id)
+    ? "delegating"
+    : s.stateDetail ? s.state + " · " + s.stateDetail : s.state;
+  const elapsed = s.state === "running" && s.runningSince
+    ? fmtDur(Date.now() - s.runningSince)
+    : "";
+
+  return [
+    truncate(s.agent || s.name, 20),
+    truncate(stateText, 28),
+    d.kind === "subagent"
+      ? ""
+      : (elapsed ? elapsed + " · " : "") + fmtTok(t.total) + " tok",
+  ];
+}
+
+function tooltipText(d) {
+  if (d.kind === "directory") {
+    return d.dirData.path + "\n" + d.dirData.runningCount + " running · " + d.dirData.sessionCount + " sessions";
+  }
+  const s = d.data;
+  return [
+    s.agent ? s.agent + " · " + s.name : s.name,
+    s.state + (s.stateDetail ? " · " + s.stateDetail : ""),
+    s.activityFull ? "now: " + s.activityFull : "",
+    s.task ? "task: " + s.task : "",
+    fmtTok(s.tokens && s.tokens.total) + " tokens · " + fmtMoney(s.cost),
+    s.model || "",
+    d.dir ? d.dir.dirData.path : "",
+    s.id,
+  ].filter(Boolean).join("\n");
+}
+
+/* ------------------------------------------------------------ handoffs --- */
+
+const linkEnd = (end) => (typeof end === "object" && end ? end.id : end);
+
+// Turn each running `subagent` call into a handoff between two bubbles.
+function resolveHandoffs(nodes, byId) {
+  const handoffs = new Map();
+
+  for (const n of nodes) {
+    if (n.kind === "directory") continue;
+    const s = n.data;
+    if (s.state !== "running" && s.state !== "waiting") continue;
+
+    const used = new Set();
+    for (const del of s.delegations || []) {
+      let child = del.childId ? byId.get(del.childId) : null;
+
+      if (!child) {
+        // The call may not name its child session yet: take the newest matching child.
+        const candidates = (s.children || [])
+          .filter((c) => !used.has(c.id) && byId.has(c.id))
+          .filter((c) => !del.agent || c.agent === del.agent)
+          .filter((c) => c.state === "running" || c.state === "waiting" || c.state === "new")
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        child = candidates.length ? byId.get(candidates[0].id) : null;
+      }
+      if (!child) continue;
+
+      used.add(child.id);
+      const key = n.id + "=>" + child.id;
+      handoffs.set(key, {
+        key,
+        parentId: n.id,
+        childId: child.id,
+        agent: del.agent || child.data.agent || "subagent",
+        label: del.description || child.data.task || del.agent || "task",
+      });
+    }
+  }
+
+  return handoffs;
+}
+
+function updateHandoffs(flat, byId) {
+  const current = resolveHandoffs(flat.nodes, byId);
+  const now = performance.now();
+  const firstSnapshot = view.handoffs === null;
+
+  for (const [key, h] of current) {
+    const token = view.tokens.get(key);
+    if (!token) {
+      // On page load, existing handoffs are shown in place instead of replayed.
+      view.tokens.set(key, Object.assign({}, h, { phase: firstSnapshot ? "rest" : "out", start: now, result: null }));
+    } else {
+      token.label = h.label;
+      if (token.phase === "back") { token.phase = "rest"; token.result = null; token.pos = null; token.reacted = false; }
+    }
+  }
+
+  if (!firstSnapshot) {
+    for (const [key, h] of view.handoffs) {
+      if (current.has(key)) continue;
+      const token = view.tokens.get(key);
+      if (!token || token.phase === "back") continue;
+
+      const child = byId.get(h.childId);
+      const state = child ? child.data.state : "idle";
+      token.phase = "back";
+      token.start = now;
+      token.result = state === "failed" ? "failed" : state === "interrupted" ? "interrupted" : "done";
+    }
+  }
+
+  view.handoffs = current;
+
+  view.delegating = new Map();
+  for (const h of current.values()) {
+    if (!view.delegating.has(h.parentId)) view.delegating.set(h.parentId, []);
+    view.delegating.get(h.parentId).push(h.agent);
+  }
+
+  view.holders = new Set(
+    flat.nodes
+      .filter((n) => n.kind !== "directory" && n.data.state === "running" && !view.delegating.has(n.id))
+      .map((n) => n.id)
+  );
+
+  for (const l of flat.links) {
+    l.handoff = current.has(linkEnd(l.source) + "=>" + linkEnd(l.target));
+  }
+}
+
+function restPoint(child) {
+  // The token sits on the upper-right rim of the bubble that holds the task.
+  // Upper left: the thought bubble already occupies the upper right of a face.
+  return { x: child.x - child.r * 0.78, y: child.y - child.r * 0.66 };
+}
+
+function tokenFrame(token, now) {
+  const parent = view.byId.get(token.parentId);
+  const child = view.byId.get(token.childId);
+
+  if (!parent || !child || !Number.isFinite(parent.x) || !Number.isFinite(child.x)) {
+    if (token.phase === "back" && token.last) return Object.assign({}, token.last, { opacity: 0, done: true });
+    return null;
+  }
+
+  const dx = child.x - parent.x;
+  const dy = child.y - parent.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  const rest = restPoint(child);
+
+  if (token.phase === "out") {
+    const t = TOKEN_OUT_MS ? clamp((now - token.start) / TOKEN_OUT_MS, 0, 1) : 1;
+    if (t >= 1) {
+      token.phase = "rest";
+      token.pos = null;
+      const rig = rigs.get(token.childId);
+      if (rig) rig.react("surprised", 700);   // the task just landed
+    }
+    const e = d3.easeCubicInOut(t);
+    const fromX = parent.x + ux * parent.r;
+    const fromY = parent.y + uy * parent.r;
+    // A slight arc so the token reads as travelling, not sliding along the link.
+    const lift = Math.sin(Math.PI * e) * Math.min(40, dist * 0.18);
+    const frame = {
+      x: fromX + (rest.x - fromX) * e + uy * lift,
+      y: fromY + (rest.y - fromY) * e - ux * lift,
+      opacity: 1,
+      scale: 0.7 + 0.3 * e,
+    };
+    if (token.phase === "out") token.pos = frame;   // faces watch the token fly
+    return frame;
+  }
+
+  if (token.phase === "back") {
+    const elapsed = now - token.start;
+    const t = TOKEN_BACK_MS ? clamp(elapsed / TOKEN_BACK_MS, 0, 1) : 1;
+    const e = d3.easeCubicInOut(t);
+    const toX = parent.x + ux * parent.r * 0.55;
+    const toY = parent.y + uy * parent.r * 0.55;
+    const lift = Math.sin(Math.PI * e) * Math.min(40, dist * 0.18);
+    const linger = elapsed - TOKEN_BACK_MS;
+    const frame = {
+      x: rest.x + (toX - rest.x) * e - uy * lift,
+      y: rest.y + (toY - rest.y) * e + ux * lift,
+      opacity: linger <= 0 ? 1 : clamp(1 - linger / TOKEN_LINGER_MS, 0, 1),
+      scale: 1,
+      done: linger >= TOKEN_LINGER_MS,
+    };
+    token.last = frame;
+    token.pos = linger <= 0 ? frame : null;
+    if (linger >= 0 && !token.reacted) {
+      // The result arrived: the parent beams or looks worried.
+      token.reacted = true;
+      const rig = rigs.get(token.parentId);
+      if (rig) rig.react(token.result === "done" ? "joy" : "worried", 1700);
+    }
+    return frame;
+  }
+
+  return { x: rest.x, y: rest.y, opacity: 1, scale: 1 };
+}
+
+function tokenLabel(token) {
+  if (token.phase === "back") {
+    if (token.result === "failed") return "✗ failed";
+    if (token.result === "interrupted") return "■ interrupted";
+    return "✓ done";
+  }
+  return truncate(token.label, 34);
+}
+
+function drawTokens() {
+  const now = performance.now();
+  const frames = [];
+
+  for (const [key, token] of view.tokens) {
+    const frame = tokenFrame(token, now);
+    if (frame && frame.done) { view.tokens.delete(key); continue; }
+    if (!frame) continue;
+    frames.push({ key, token, frame });
+  }
+
+  const join = tokenLayer.selectAll("g.token").data(frames, (d) => d.key);
+  join.exit().remove();
+
+  const enter = join.enter().append("g").attr("class", "token");
+  enter.append("circle").attr("class", "glow").attr("r", 11);
+  enter.append("circle").attr("class", "core").attr("r", 5.5);
+  enter.append("text").attr("x", 10).attr("y", 4);
+
+  const all = enter.merge(join);
+  all
+    .attr("class", (d) => "token" + (d.token.phase === "back" ? " result-" + d.token.result : ""))
+    .attr("opacity", (d) => d.frame.opacity)
+    .attr("transform", (d) =>
+      "translate(" + d.frame.x.toFixed(1) + "," + d.frame.y.toFixed(1) + ") scale(" + d.frame.scale + ")");
+
+  // A resting token sits left of its face, so its label reads leftwards.
+  all.select("text")
+    .attr("x", (d) => d.token.phase === "rest" ? -10 : 10)
+    .attr("text-anchor", (d) => d.token.phase === "rest" ? "end" : "start")
+    .text((d) => tokenLabel(d.token));
+}
+
+d3.timer(drawTokens);
+
+function captionText(d) {
+  if (d.kind === "directory") return "";
+  const s = d.data;
+  let text = "";
+
+  if (view.delegating.has(d.id)) {
+    text = "delegated " + ARROW + " " + Array.from(new Set(view.delegating.get(d.id))).join(", ");
+  } else if (s.state === "running") {
+    text = s.activity || "";
+  } else if (s.state === "waiting") {
+    text = "needs approval" + (s.stateDetail ? ": " + s.stateDetail : "");
+  }
+
+  return truncate(text, d.kind === "subagent" ? 30 : 40);
+}
+
+function updateWorkNow() {
+  const box = document.getElementById("worknow");
+  const holders = Array.from(view.holders)
+    .map((id) => view.byId.get(id))
+    .filter(Boolean)
+    .sort((a, b) => (a.data.runningSince || 0) - (b.data.runningSince || 0))
+    .slice(0, 6);
+
+  if (!holders.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+
+  let html = '<div class="wn-head">working now</div>';
+  for (const node of holders) {
+    const chain = [];
+    for (let n = node; n; n = n.parent) chain.unshift(n);
+    const names = chain.map((n, i) => {
+      const label = esc(n.data.agent || n.data.name);
+      return i === chain.length - 1 ? '<span class="holder">' + label + "</span>" : label;
+    });
+    const act = node.data.activity || node.data.stateDetail || "";
+    html += '<button data-id="' + esc(node.id) + '" title="' + esc(node.data.activityFull || act) + '">' +
+      '<span class="wn-chain">' + names.join(" " + ARROW + " ") + "</span>" +
+      '<span class="wn-act">' + esc(act) + "</span>" +
+      "</button>";
+  }
+
+  box.innerHTML = html;
+  box.classList.remove("hidden");
+}
+
+document.getElementById("worknow").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-id]");
+  if (!button) return;
+  const node = view.byId.get(button.getAttribute("data-id"));
+  if (node) selectNode(node);
+});
+
+/* --------------------------------------------------------------- faces --- */
+// Every session and subagent is drawn as a flat smiley whose expression shows
+// its status and whose eyes follow what matters (a task token, its subagents,
+// its work, or the mouse).
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const FACE_INK = "#2a1c10";
+
+// [fill, outline] per face status
+const FACE_PALETTE = {
+  idle:        ["#b4bce0", "#6d77a8"],
+  running:     ["#ffd23f", "#c98a0e"],
+  delegating:  ["#ffd23f", "#c98a0e"],
+  waiting:     ["#ffb35c", "#c9721c"],
+  done:        ["#a3e070", "#5c9c33"],
+  failed:      ["#ff8fa1", "#c9465f"],
+  interrupted: ["#c7a6ff", "#8a63d2"],
+};
+
+//   smile -1..1   open 0..1   mw mouth width   mx mouth shift   tilt crooked mouth
+//   lid eye openness   happy ^-eyes   line –-eyes   brows visible
+//   lift* raise a brow   tilt* >0 lowers the inner end, <0 raises it
+//   cheeks blush   tear / think / ask / zz extras
+const FACE_NEUTRAL = {
+  smile: .3, open: 0, mw: 1, mx: 0, tilt: 0,
+  lid: 1, happy: 0, line: 0,
+  brows: 0, liftL: 0, liftR: 0, tiltL: 0, tiltR: 0,
+  cheeks: 0, tear: 0, think: 0, ask: 0, zz: 0,
+};
+
+const FACE_EXPRESSIONS = {
+  idle:      { smile: .35 },
+  sleepy:    { smile: .12, mw: .65, lid: .12, zz: 1 },
+  thinking:  { smile: .02, mw: .5, mx: .2, tilt: .5, brows: 1, liftL: .9, tiltR: .55, think: 1 },
+  watching:  { smile: .75, open: .45, mw: .9, lid: 1.18, brows: 1, liftL: .8, liftR: .8, tiltL: -.3, tiltR: -.3 },
+  asking:    { smile: -.05, mw: .7, tilt: -.7, brows: 1, liftR: 1, tiltL: .45, ask: 1 },
+  happy:     { smile: 1, open: .4, happy: 1, cheeks: 1 },
+  sad:       { smile: -.85, mw: .85, lid: .85, brows: 1, tiltL: -1, tiltR: -1, tear: 1 },
+  annoyed:   { smile: 0, mw: .75, tilt: .25, line: 1, brows: 1, tiltL: .7, tiltR: .7, liftL: -.2, liftR: -.2 },
+  surprised: { smile: 0, open: .8, mw: .5, lid: 1.22, brows: 1, liftL: 1, liftR: 1 },
+  joy:       { smile: 1, open: .5, happy: 1, cheeks: 1 },
+  worried:   { smile: -.7, open: .1, lid: .9, brows: 1, tiltL: -1, tiltR: -1 },
+};
+
+const rigs = new Map();      // session id -> FaceRig
+let mouseClient = null;
+
+const f2 = (n) => n.toFixed(2);
+const approach = (v, target, rate, dt) => v + (target - v) * (1 - Math.exp(-rate * dt));
+const rand = (a, b) => a + Math.random() * (b - a);
+
+function svgEl(tag, attrs, parent) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) node.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+class FaceRig {
+  constructor(g, d) {
+    this.id = d.id;
+    this.r = d.r;
+    this.sub = d.kind === "subagent";
+    this.status = "idle";
+    this.lastState = null;
+    this.doneUntil = 0;
+    this.phase = rand(0, Math.PI * 2);
+    this.lidBlink = 1;
+    this.blinkUntil = 0;
+    this.nextBlink = performance.now() + rand(800, 3000);
+    this.gx = 0; this.gy = 0;
+    this.nextGlance = 0;
+    this.glance = null;
+    this.focusIndex = 0;
+    this.reaction = null;
+    this.e = Object.assign({}, FACE_NEUTRAL, FACE_EXPRESSIONS.idle);
+    this.build(g);
+    this.paint("idle");
+  }
+
+  build(g) {
+    const r = this.r;
+    this.root = svgEl("g", { class: "face" });
+    g.insertBefore(this.root, g.querySelector("text.name"));
+    this.ball = svgEl("circle", { class: "face-ball", r }, this.root);
+
+    this.features = svgEl("g", {}, this.root);
+    this.eyes = [-1, 1].map((side) => {
+      const wrap = svgEl("g", {}, this.features);
+      const lid = svgEl("g", {}, wrap);
+      svgEl("circle", { r: r * .1, fill: FACE_INK }, lid);
+      const happy = svgEl("path", {
+        d: "M " + f2(-r * .11) + " " + f2(r * .03) + " Q 0 " + f2(-r * .13) + " " + f2(r * .11) + " " + f2(r * .03),
+        fill: "none", stroke: FACE_INK, "stroke-width": r * .07, "stroke-linecap": "round", opacity: 0,
+      }, wrap);
+      const line = svgEl("path", {
+        d: "M " + f2(-r * .11) + " 0 L " + f2(r * .11) + " 0",
+        fill: "none", stroke: FACE_INK, "stroke-width": r * .07, "stroke-linecap": "round", opacity: 0,
+      }, wrap);
+      return { side, wrap, lid, happy, line };
+    });
+    this.brows = [-1, 1].map(() => svgEl("path", {
+      fill: "none", stroke: FACE_INK, "stroke-width": r * .06, "stroke-linecap": "round", opacity: 0,
+    }, this.features));
+    this.cheeks = [-1, 1].map((side) => svgEl("ellipse", {
+      cx: side * r * .48, cy: r * .2, rx: r * .13, ry: r * .07, fill: "#ff6b8a", opacity: 0,
+    }, this.features));
+    this.mouth = svgEl("path", {
+      fill: FACE_INK, stroke: FACE_INK, "stroke-width": r * .07, "stroke-linejoin": "round", "stroke-linecap": "round",
+    }, this.features);
+    const k = r / 44;
+    this.tear = svgEl("path", {
+      d: "M 0 " + f2(-7 * k) + " C " + f2(5 * k) + " 0 " + f2(5 * k) + " " + f2(6 * k) + " 0 " + f2(6 * k) +
+         " C " + f2(-5 * k) + " " + f2(6 * k) + " " + f2(-5 * k) + " 0 0 " + f2(-7 * k) + " Z",
+      fill: "#5aa9ff", stroke: "#2f6fc0", "stroke-width": 1, opacity: 0,
+    }, this.features);
+
+    this.thought = svgEl("g", { opacity: 0 }, this.root);
+    const bx = r * 1.05, by = -r * 1.38;
+    const cloud = { fill: "#eef1ff", stroke: FACE_INK, "stroke-width": 1.5 };
+    svgEl("circle", Object.assign({ cx: r * .62, cy: -r * .82, r: r * .07 }, cloud), this.thought);
+    svgEl("circle", Object.assign({ cx: r * .78, cy: -r * 1.02, r: r * .11 }, cloud), this.thought);
+    svgEl("ellipse", Object.assign({ cx: bx, cy: by, rx: r * .56, ry: r * .34 }, cloud), this.thought);
+    this.thinkDots = [-1, 0, 1].map((i) =>
+      svgEl("circle", { cx: bx + i * r * .2, cy: by, r: r * .065, fill: FACE_INK }, this.thought));
+
+    this.ask = svgEl("text", {
+      class: "face-sign", x: r * .62, y: -r * .62, "font-size": r * .62, fill: "#ffb35c", opacity: 0,
+    }, this.root);
+    this.ask.textContent = "?";
+
+    this.zz = [0, 1].map(() => {
+      const t = svgEl("text", { class: "face-sign", "font-size": r * .32, fill: "#c9d2ff", opacity: 0 }, this.root);
+      t.textContent = "z";
+      return t;
+    });
+  }
+
+  remove() { this.root.remove(); }
+
+  // Map the session's state (from the snapshot) to a face status.
+  setData(d) {
+    const s = d.data;
+    const busy = (st) => st === "running" || st === "waiting";
+    if (this.sub && busy(this.lastState) && !busy(s.state) && s.state !== "failed" && s.state !== "interrupted") {
+      this.doneUntil = performance.now() + 4000;
+    }
+    this.lastState = s.state;
+
+    let status = "idle";
+    if (s.state === "failed") status = "failed";
+    else if (s.state === "interrupted") status = "interrupted";
+    else if (s.state === "waiting") status = "waiting";
+    else if (s.state === "running") status = view.delegating.has(d.id) ? "delegating" : "running";
+    else if (performance.now() < this.doneUntil) status = "done";
+
+    if (status !== this.status) this.paint(status);
+  }
+
+  paint(status) {
+    this.status = status;
+    const [fill, stroke] = FACE_PALETTE[status];
+    this.ball.style.fill = fill;
+    this.ball.style.stroke = stroke;
+  }
+
+  react(kind, ms) {
+    this.reaction = { kind, until: performance.now() + ms };
+  }
+
+  expression() {
+    switch (this.status) {
+      case "running": return "thinking";
+      case "delegating": return "watching";
+      case "waiting": return "asking";
+      case "done": return "happy";
+      case "failed": return "sad";
+      case "interrupted": return "annoyed";
+      default: return this.sub ? "sleepy" : "idle";
+    }
+  }
+
+  // Where the face looks, in simulation coordinates.
+  chooseLook(node, now) {
+    for (const token of view.tokens.values()) {
+      if (token.pos && token.phase !== "rest" && (token.parentId === this.id || token.childId === this.id)) {
+        return token.pos;
+      }
+    }
+
+    const r = this.r;
+    switch (this.status) {
+      case "delegating": {
+        const kids = view.nodes.filter((n) => n.parent && n.parent.id === this.id &&
+          rigs.has(n.id) && rigs.get(n.id).status === "running");
+        if (kids.length) {
+          if (now > this.nextGlance) {
+            this.focusIndex = (this.focusIndex + 1) % kids.length;
+            this.nextGlance = now + rand(1100, 2200);
+          }
+          return kids[this.focusIndex % kids.length];
+        }
+        break;
+      }
+      case "running":
+        if (now > this.nextGlance) {
+          this.glance = Math.random() < .3 ? { dx: -r * .3, dy: r * 3 } : null;
+          this.nextGlance = now + (this.glance ? rand(600, 1000) : rand(1800, 3400));
+        }
+        return this.glance
+          ? { x: node.x + this.glance.dx, y: node.y + this.glance.dy }
+          : { x: node.x + r * 1.3, y: node.y - r * 1.8 + Math.sin(now / 900) * r * .3 };
+      case "waiting":
+        return this.mouseWorld() || node;
+      case "failed":
+        // Sad faces look at you when the mouse is around, otherwise at the ground.
+        return this.mouseWorld() || { x: node.x + Math.sin(now / 1600 + this.phase) * r, y: node.y + r * 3 };
+      case "interrupted":
+        return { x: node.x - r * 3, y: node.y + r * .3 };
+      case "done":
+        return node.parent || node;
+    }
+
+    if (this.sub) return { x: node.x, y: node.y + r * 2 };
+    const mouse = this.mouseWorld();
+    if (mouse) return mouse;
+    if (now > this.nextGlance) {
+      const busy = view.nodes.filter((n) => n.id !== this.id && rigs.has(n.id) &&
+        (rigs.get(n.id).status === "running" || rigs.get(n.id).status === "delegating"));
+      this.glance = busy.length && Math.random() < .6
+        ? busy[Math.floor(Math.random() * busy.length)].id
+        : null;
+      this.nextGlance = now + rand(1200, 3200);
+    }
+    const target = this.glance && view.byId.get(this.glance);
+    return target || { x: node.x, y: node.y + 50 };
+  }
+
+  mouseWorld() {
+    if (!mouseClient) return null;
+    const [x, y] = d3.zoomTransform(SVG.node()).invert(mouseClient);
+    return { x, y };
+  }
+
+  update(node, now, dt) {
+    const target = this.chooseLook(node, now);
+    const dx = (target.x || 0) - node.x;
+    const dy = (target.y || 0) - node.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const strength = clamp(dist / (this.r * 2.2), 0, 1);
+    this.gx = approach(this.gx, (dx / dist) * strength, 9, dt);
+    this.gy = approach(this.gy, (dy / dist) * strength, 9, dt);
+
+    const reaction = this.reaction && now < this.reaction.until ? this.reaction.kind : null;
+    const goal = Object.assign({}, FACE_NEUTRAL, FACE_EXPRESSIONS[reaction || this.expression()]);
+    if (this.status === "running" && !reaction) goal.mx += Math.sin(now / 700 + this.phase) * .05;
+
+    // Blink only with open eyes: asleep, ^ ^ and – – faces keep their eyes as they are.
+    const eyesOpen = goal.lid > .5 && goal.happy < .5 && goal.line < .5;
+    if (!eyesOpen) {
+      this.blinkUntil = 0;
+    } else if (now > this.nextBlink) {
+      this.blinkUntil = now + 130;
+      this.nextBlink = now + (Math.random() < .2 ? 260 : rand(1800, 5200));
+    }
+    const blinking = now < this.blinkUntil;
+    this.lidBlink = approach(this.lidBlink, blinking ? .05 : 1, blinking ? 40 : 14, dt);
+
+    for (const key in this.e) this.e[key] = approach(this.e[key], goal[key], 8, dt);
+  }
+
+  render(now) {
+    const r = this.r;
+    const e = this.e;
+
+    this.features.setAttribute("transform", "translate(" + f2(this.gx * r * .2) + "," + f2(this.gy * r * .16) + ")");
+
+    const lid = clamp(e.lid * this.lidBlink, .04, 1.25);
+    const openEyes = clamp((1 - e.happy) * (1 - e.line), 0, 1);
+    for (const eye of this.eyes) {
+      const ex = eye.side * r * .27 + this.gx * r * .035;
+      const ey = -r * .12 + this.gy * r * .03;
+      eye.wrap.setAttribute("transform", "translate(" + f2(ex) + "," + f2(ey) + ")");
+      eye.lid.setAttribute("transform", "scale(1," + lid.toFixed(3) + ")");
+      eye.lid.setAttribute("opacity", f2(openEyes));
+      eye.happy.setAttribute("opacity", f2(e.happy));
+      eye.line.setAttribute("opacity", f2(e.line * (1 - e.happy)));
+    }
+
+    this.brows.forEach((brow, i) => {
+      const side = i === 0 ? -1 : 1;
+      const lift = (side < 0 ? e.liftL : e.liftR) * r * .1;
+      const tilt = (side < 0 ? e.tiltL : e.tiltR) * r * .08;
+      const y = -r * .4 - lift;
+      brow.setAttribute("d", "M " + f2(side * r * .42) + " " + f2(y - tilt * .3) + " L " + f2(side * r * .14) + " " + f2(y + tilt));
+      brow.setAttribute("opacity", f2(clamp(e.brows, 0, 1)));
+    });
+
+    this.cheeks.forEach((c) => c.setAttribute("opacity", f2(clamp(e.cheeks * .5, 0, .5))));
+
+    const cx = e.mx * r;
+    const w = r * (.3 + .06 * Math.max(0, e.smile)) * e.mw * (1 - e.open * .3);
+    const y0 = r * .3;
+    const corner = y0 - e.smile * r * .07;
+    const tilt = e.tilt * r * .06;
+    const upper = y0 + e.smile * r * .16;
+    const lower = upper + e.open * r * .4 + Math.max(0, e.smile) * e.open * r * .1;
+    this.mouth.setAttribute("d",
+      "M " + f2(cx - w) + " " + f2(corner + tilt) +
+      " Q " + f2(cx) + " " + f2(upper) + " " + f2(cx + w) + " " + f2(corner - tilt) +
+      " Q " + f2(cx) + " " + f2(lower) + " " + f2(cx - w) + " " + f2(corner + tilt) + " Z");
+
+    const tp = (now / 1500 + this.phase) % 1;
+    this.tear.setAttribute("transform", "translate(" + f2(-r * .3) + "," + f2(r * .06 + tp * r * .42) + ")");
+    this.tear.setAttribute("opacity", f2(e.tear * (tp < .1 ? tp * 10 : 1 - (tp - .1) / .9)));
+
+    this.thought.setAttribute("opacity", f2(clamp(e.think, 0, 1)));
+    if (e.think > .02) {
+      this.thinkDots.forEach((dot, i) => {
+        const b = REDUCED_MOTION ? 0 : Math.max(0, Math.sin(now / 220 - i * .9));
+        dot.setAttribute("transform", "translate(0," + f2(-b * r * .07) + ")");
+        dot.setAttribute("opacity", f2(.45 + .55 * b));
+      });
+    }
+
+    this.ask.setAttribute("opacity", f2(clamp(e.ask, 0, 1)));
+    this.zz.forEach((z, i) => {
+      const p = (now / 2400 + i * .5) % 1;
+      z.setAttribute("x", f2(r * (.55 + p * .35)));
+      z.setAttribute("y", f2(-r * (.55 + p * .6)));
+      z.setAttribute("font-size", f2(r * (.22 + p * .2)));
+      z.setAttribute("opacity", f2(clamp(e.zz, 0, 1) * Math.sin(Math.PI * p)));
+    });
+  }
+}
+
+// Create, rebuild or drop face rigs to match the current nodes.
+function syncFaces() {
+  const alive = new Set();
+  nodeSel.each(function (d) {
+    if (d.kind === "directory") return;
+    alive.add(d.id);
+    let rig = rigs.get(d.id);
+    if (rig && (rig.r !== d.r || !this.contains(rig.root))) { rig.remove(); rig = null; }
+    if (!rig) {
+      rig = new FaceRig(this, d);
+      rigs.set(d.id, rig);
+    }
+    rig.sub = d.kind === "subagent";
+    rig.setData(d);
+  });
+  for (const [id, rig] of rigs) {
+    if (!alive.has(id)) { rig.remove(); rigs.delete(id); }
+  }
+}
+
+let lastFaceFrame = performance.now();
+d3.timer(() => {
+  const now = performance.now();
+  const dt = Math.min(.05, (now - lastFaceFrame) / 1000);
+  lastFaceFrame = now;
+  for (const [id, rig] of rigs) {
+    const node = view.byId.get(id);
+    if (!node || !Number.isFinite(node.x)) continue;
+    rig.update(node, now, dt);
+    rig.render(now);
+  }
+});
+
+SVG.on("pointermove.face", (event) => { mouseClient = [event.offsetX, event.offsetY]; })
+   .on("pointerleave.face", () => { mouseClient = null; });
+
+/* -------------------------------------------------------------- render --- */
+
+function render(data) {
+  view.data = data;
+
+  const flat = flatten(data);
+  const previous = view.byId;
+
+  let topologyChanged =
+    flat.nodes.length !== view.nodes.length ||
+    flat.links.length !== view.links.length ||
+    flat.nodes.some((n) => !previous.has(n.id));
+
+  let radiusChanged = false;
+  for (const n of flat.nodes) {
+    const old = previous.get(n.id);
+    if (!old || Math.abs(old.r - n.r) >= 3) radiusChanged = true;
+  }
+
+  placeDirectories(flat.nodes);
+
+  for (const n of flat.nodes) {
+    const old = previous.get(n.id);
+    if (old && Number.isFinite(old.x)) {
+      n.x = old.x; n.y = old.y; n.vx = old.vx; n.vy = old.vy;
+      if (Number.isFinite(old.fx)) { n.fx = old.fx; n.fy = old.fy; }
+    } else if (n.kind === "directory") {
+      // already placed
+    } else if (n.parent && Number.isFinite(n.parent.x)) {
+      n.x = n.parent.x; n.y = n.parent.y;
+    } else if (n.dir && Number.isFinite(n.dir.x)) {
+      n.x = n.dir.x; n.y = n.dir.y;
+    }
+  }
+
+  updateHandoffs(flat, new Map(flat.nodes.map((n) => [n.id, n])));
+
+  const selection = nodeLayer.selectAll("g.node").data(flat.nodes, (d) => d.id);
+
+  const entering = selection.enter()
+    .append("g")
+    .attr("class", "node")
+    .style("opacity", 0)
+    .call(drag)
+    .on("click", (event, d) => {
+      event.stopPropagation();
+      selectNode(d);
+    });
+
+  entering.append("circle").attr("class", "halo");
+  entering.append("circle").attr("class", "ring");
+
+  entering.append("circle").attr("class", "bubble");
+  entering.append("text").attr("class", "name").attr("text-anchor", "middle");
+  entering.append("text").attr("class", "meta").attr("text-anchor", "middle");
+  entering.append("text").attr("class", "tok").attr("text-anchor", "middle");
+  entering.append("text").attr("class", "act").attr("text-anchor", "middle");
+  entering.append("title");
+
+  entering.transition().duration(320).style("opacity", 1);
+  selection.exit().transition().duration(240).style("opacity", 0).remove();
+
+  nodeSel = entering.merge(selection);
+
+  nodeSel.attr("class", (d) => {
+    const state = d.kind === "directory" ? "dir" : d.data.state;
+    const selected = d.id === view.selected ? " selected" : "";
+    const role = view.holders.has(d.id) ? " holder" : view.delegating.has(d.id) ? " delegating" : "";
+    const face = d.kind === "directory" ? "" : " has-face";
+    return "node kind-" + d.kind + " state-" + state + role + face + selected;
+  });
+
+  nodeSel.select("circle.halo").attr("r", (d) => d.r + 5);
+  nodeSel.select("circle.ring").attr("r", (d) => d.r + 9);
+
+  nodeSel.select("text.act")
+    .attr("y", (d) => nodeGeometry(d).act)
+    .attr("font-size", (d) => d.kind === "subagent" ? 9 : 10)
+    .text(captionText);
+
+  nodeSel.select("circle.bubble").attr("r", (d) => d.r);
+
+  nodeSel.select("text.name")
+    .attr("y", (d) => nodeGeometry(d).name)
+    .attr("font-size", (d) => d.kind === "directory" ? 13 : d.kind === "subagent" ? 11 : 12.5)
+    .text((d) => labelParts(d)[0]);
+
+  nodeSel.select("text.meta")
+    .attr("y", (d) => nodeGeometry(d).meta)
+    .attr("font-size", (d) => d.kind === "directory" ? 10.5 : 9.5)
+    .text((d) => labelParts(d)[1]);
+
+  nodeSel.select("text.tok")
+    .attr("y", (d) => nodeGeometry(d).tok)
+    .attr("font-size", 9.5)
+    .style("display", (d) => d.kind === "subagent" ? "none" : null)
+    .text((d) => labelParts(d)[2]);
+
+  nodeSel.select("title").text(tooltipText);
+
+  syncFaces();
+
+  /* links */
+  const linkJoin = linkLayer.selectAll("line.link").data(flat.links, (d) => d.key);
+  const linkEnter = linkJoin.enter().append("line").attr("class", "link").style("opacity", 0);
+  linkEnter.transition().duration(300).style("opacity", 1);
+  linkJoin.exit().transition().duration(240).style("opacity", 0).remove();
+
+  linkSel = linkEnter.merge(linkJoin)
+    .attr("class", (d) => "link" + (d.handoff ? " handoff" : d.live ? " live" : ""));
+
+  /* simulation */
+  if (!view.sim) {
+    view.sim = d3.forceSimulation(flat.nodes)
+      .force("link", d3.forceLink(flat.links)
+        .id((d) => d.id)
+        .distance((l) => l.target.kind === "directory"
+          ? 168
+          : 64 + l.source.r + l.target.r)
+        .strength((l) => l.target.kind === "directory" ? 0.62 : 0.88))
+      .force("charge", d3.forceManyBody().strength((d) => d.kind === "directory" ? -1100 : -230))
+      // Faces get extra room for the labels underneath them.
+      .force("collide", d3.forceCollide().radius((d) => d.kind === "directory" ? d.r + 7 : d.r + 30).iterations(2))
+      .force("x", d3.forceX(xTarget).strength(xyStrength))
+      .force("y", d3.forceY(yTarget).strength(xyStrength))
+      .alphaDecay(0.045)
+      .velocityDecay(0.36)
+      .on("tick", ticked);
+  } else {
+    view.sim.nodes(flat.nodes);
+    view.sim.force("link").links(flat.links);
+    view.sim.force("x", d3.forceX(xTarget).strength(xyStrength));
+    view.sim.force("y", d3.forceY(yTarget).strength(xyStrength));
+
+    if (topologyChanged) {
+      view.sim.alpha(0.8).restart();
+    } else if (radiusChanged) {
+      view.sim.alpha(0.06).restart();
+    }
+  }
+
+  view.nodes = flat.nodes;
+  view.links = flat.links;
+  view.byId = new Map(flat.nodes.map((n) => [n.id, n]));
+
+  ticked();
+  updateChrome(data);
+  updateWorkNow();
+  updateToday(data);
+
+  if (view.selected && view.byId.has(view.selected)) {
+    nodeSel.classed("selected", (d) => d.id === view.selected);
+  }
+
+  if (!view.hashHandled) {
+    view.hashHandled = true;
+    const match = /^#select=(.+)$/.exec(location.hash);
+    if (match) {
+      const id = decodeURIComponent(match[1]);
+      const node = view.byId.get(id) || view.byId.get("dir:" + id);
+      if (node) selectNode(node);
+    }
+  }
+
+  refreshDetail();
+}
+
+function ticked() {
+  if (nodeSel) {
+    nodeSel.attr("transform", (d) => "translate(" + (d.x || 0) + "," + (d.y || 0) + ")");
+  }
+  if (linkSel) {
+    linkSel.each(function (d) {
+      const dx = (d.target.x || 0) - (d.source.x || 0);
+      const dy = (d.target.y || 0) - (d.source.y || 0);
+      const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+      const ux = dx / distance;
+      const uy = dy / distance;
+
+      d3.select(this)
+        .attr("x1", (d.source.x || 0) + ux * (d.source.r + 2))
+        .attr("y1", (d.source.y || 0) + uy * (d.source.r + 2))
+        .attr("x2", (d.target.x || 0) - ux * (d.target.r + 4))
+        .attr("y2", (d.target.y || 0) - uy * (d.target.r + 4));
+    });
+  }
+}
+
+/* -------------------------------------------------------------- chrome --- */
+
+function updateChrome(data) {
+  const dot = document.getElementById("liveDot");
+  dot.className = "live-dot " + (data.monitor.stale ? "stale" : "live");
+
+  const server = data.server || {};
+  const info = document.getElementById("serverInfo");
+  const bits = [];
+  if (server.version) bits.push("v" + server.version);
+  if (server.url) bits.push(server.url.replace(/^https?:\/\//, ""));
+  if (typeof server.latencyMs === "number" && server.healthy) bits.push(server.latencyMs + " ms");
+  info.textContent = bits.join(" · ") || "connected";
+
+  const totals = data.totals || {};
+  const dirs = totals.directories || 0;
+  const sessions = totals.sessions || 0;
+  const subagents = totals.subagents || 0;
+  document.getElementById("chips").innerHTML =
+    '<span class="chip"><b>' + dirs + "</b> " + (dirs === 1 ? "dir" : "dirs") + "</span>" +
+    '<span class="chip"><b>' + sessions + "</b> " + (sessions === 1 ? "session" : "sessions") + "</span>" +
+    '<span class="chip running"><b>' + (totals.running || 0) + "</b> running</span>" +
+    '<span class="chip waiting"><b>' + (totals.waiting || 0) + "</b> waiting</span>" +
+    '<span class="chip"><b>' + subagents + "</b> " + (subagents === 1 ? "subagent" : "subagents") + "</span>";
+
+  document.getElementById("stale").classList.toggle("hidden", !data.monitor.stale);
+}
+
+function updateToday(data) {
+  const today = data.today || {};
+  const t = today.tokens || {};
+  const total = (Number(t.input) || 0) + (Number(t.output) || 0) + (Number(t.reasoning) || 0);
+
+  document.getElementById("todayDate").textContent = today.date || "";
+  document.getElementById("todayValue").innerHTML = fmtTok(total) + "<small>tok</small>";
+  document.getElementById("todaySub").textContent =
+    fmtTok(t.input) + " in · " + fmtTok(t.output) + " out · " + fmtTok(t.reasoning) + " reason";
+  document.getElementById("todayCache").textContent =
+    "cache " + fmtTok(t.cacheRead) + " read · " + fmtMoney(today.cost) +
+    (today.steps ? " · " + today.steps + " steps" : "");
+}
+
+/* -------------------------------------------------------------- detail --- */
+
+function dirPath(d) {
+  if (d.kind === "directory") return d.dirData.path;
+  return d.dir ? d.dir.dirData.path : "";
+}
+
+function countTree(session) {
+  return 1 + (session.children || []).reduce((sum, child) => sum + countTree(child), 0);
+}
+
+const copyIconSvg = '<svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="1" y="1" width="6.5" height="6.5" rx="1" stroke="currentColor" stroke-width="1.2" fill="var(--bg)"/></svg>';
+
+function sessionRows(d) {
+  const s = d.data;
+  const sinceDur = s.stateSince ? fmtDur(Date.now() - s.stateSince) : "";
+
+  let html = '<div class="d-kicker">' + (d.kind === "subagent" ? "subagent" : "session") + "</div>";
+  html += "<h2>" + esc(s.name) + "</h2>";
+  html += '<div class="d-subhead">';
+  html += '<span class="st ' + esc(s.state) + '">' + esc(s.state) + "</span>";
+  if (s.stateDetail) html += '<span class="d-since">' + esc(s.stateDetail) + "</span>";
+  if (sinceDur) html += '<span class="d-since">' + sinceDur + "</span>";
+  html += "</div>";
+
+  if ((s.state === "running" || s.state === "waiting") && (s.activityFull || s.activity)) {
+    html += '<div class="d-section">doing now</div><div class="d-prompt mono">' +
+      esc((s.stateDetail ? s.stateDetail + ": " : "") + (s.activityFull || s.activity)) + "</div>";
+  }
+
+  if (s.task) {
+    html += '<div class="d-section">assigned task</div><div class="d-prompt">' + esc(s.task) + "</div>";
+  }
+
+  const handedOff = Array.from((view.handoffs || new Map()).values()).filter((h) => h.parentId === d.id);
+  if (handedOff.length) {
+    html += '<div class="d-section">handed off to</div>';
+    for (const h of handedOff) {
+      const child = view.byId.get(h.childId);
+      const childState = child ? child.data.state : "";
+      html += '<button class="kid" data-id="' + esc(h.childId) + '">' +
+        "<span>" + esc(h.agent) + " · " + esc(h.label) + "</span>" +
+        '<span class="st ' + esc(childState) + '">' + esc(childState) + "</span>" +
+        "</button>";
+    }
+  }
+
+  const rows = [
+    ["id", '<span class="mono">' + esc(s.id) + '</span><button class="copy-btn" data-copy="' + esc(s.id) + '" title="Copy session ID">' + copyIconSvg + "</button>"],
+    ["agent", esc(s.agent || "—")],
+    ["model", '<span class="mono">' + esc(s.model || "—") + "</span>"],
+    ["dir", '<span class="mono small d-path">' + esc(dirPath(d)) + "</span>"],
+    ["created", esc(fmtDate(s.createdAt))],
+    s.runningSince ? ["running", esc(fmtDate(s.runningSince)) + " · " + esc(fmtDur(Date.now() - s.runningSince))] : null,
+    ["updated", esc(fmtDate(s.updatedAt))],
+    ["outcome", esc(s.outcome || "—")],
+  ].filter(Boolean);
+
+  html += "<dl>";
+  for (const [key, value] of rows) {
+    html += "<dt>" + esc(key) + "</dt><dd>" + value + "</dd>";
+  }
+  html += "</dl>";
+
+  const t = s.tokens || {};
+  html += '<div class="d-section">tokens</div><div class="tokgrid">' +
+    "<div><b>" + fmtTok(t.total) + "</b><span>total</span></div>" +
+    "<div><b>" + fmtTok(t.input) + "</b><span>input</span></div>" +
+    "<div><b>" + fmtTok(t.output) + "</b><span>output</span></div>" +
+    "<div><b>" + fmtTok(t.reasoning) + "</b><span>reasoning</span></div>" +
+    "<div><b>" + fmtTok(t.cacheRead) + "</b><span>cache rd</span></div>" +
+    "<div><b>" + fmtMoney(s.cost) + "</b><span>cost</span></div>" +
+    "</div>";
+
+  if (s.prompt) {
+    html += '<div class="d-section">first prompt</div><div class="d-prompt">' + esc(s.prompt) + "</div>";
+  }
+
+  const kids = s.children || [];
+  if (kids.length) {
+    html += '<div class="d-section">subagents · ' + countTree(s) + " total</div>";
+    for (const kid of kids) {
+      html += '<button class="kid" data-id="' + esc(kid.id) + '">' +
+        "<span>" + esc(kid.name) + "</span>" +
+        '<span class="st ' + esc(kid.state) + '">' + esc(kid.state) + "</span>" +
+        "</button>";
+    }
+  }
+
+  return html;
+}
+
+function directoryRows(d) {
+  const dir = d.dirData;
+  let html = '<div class="d-kicker">directory</div>';
+  html += "<h2>" + esc(dir.label) + "</h2>";
+  html += '<div class="d-subhead">';
+  html += '<span class="d-since">' + dir.sessionCount + " session" + (dir.sessionCount !== 1 ? "s" : "") + "</span>";
+  if (dir.runningCount) html += '<span class="st running">' + dir.runningCount + " running</span>";
+  html += "</div>";
+
+  html += "<dl>";
+  html += '<dt>path</dt><dd class="mono small d-path">' + esc(dir.path) + '<button class="copy-btn" data-copy="' + esc(dir.path) + '" title="Copy path">' + copyIconSvg + "</button></dd>";
+  html += "<dt>sessions</dt><dd>" + dir.sessionCount + "</dd>";
+  html += "<dt>running</dt><dd>" + dir.runningCount + "</dd>";
+  html += "<dt>waiting</dt><dd>" + (dir.waitingCount || 0) + "</dd>";
+  html += "</dl>";
+
+  if (dir.sessions && dir.sessions.length) {
+    html += '<div class="d-section">sessions</div>';
+    for (const session of dir.sessions) {
+      html += '<button class="kid" data-id="' + esc(session.id) + '">' +
+        "<span>" + esc(session.name) + "</span>" +
+        '<span class="st ' + esc(session.state) + '">' + esc(session.state) + "</span>" +
+        "</button>";
+    }
+  }
+
+  return html;
+}
+
+function selectNode(d) {
+  view.selected = d.id;
+  if (nodeSel) nodeSel.classed("selected", (n) => n.id === view.selected);
+
+  const body = document.getElementById("detailBody");
+  body.innerHTML = d.kind === "directory" ? directoryRows(d) : sessionRows(d);
+  attachDetailHandlers(body);
+
+  document.getElementById("detail").classList.add("open");
+}
+
+function attachDetailHandlers(body) {
+  for (const button of body.querySelectorAll("[data-id]")) {
+    button.addEventListener("click", () => {
+      const node = view.byId.get(button.getAttribute("data-id"));
+      if (node) selectNode(node);
+    });
+  }
+
+  for (const btn of body.querySelectorAll(".copy-btn")) {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(btn.getAttribute("data-copy")).then(() => {
+        btn.innerHTML = "✓";
+        btn.classList.add("copied");
+        setTimeout(() => { btn.innerHTML = copyIconSvg; btn.classList.remove("copied"); }, 1500);
+      });
+    });
+  }
+}
+
+function refreshDetail() {
+  if (!view.selected) return;
+
+  const panel = document.getElementById("detail");
+  if (!panel.classList.contains("open")) return;
+
+  const node = view.byId.get(view.selected);
+  if (!node) {
+    closeDetail();
+    return;
+  }
+
+  const body = document.getElementById("detailBody");
+  const scrollTop = body.scrollTop;
+  body.innerHTML = node.kind === "directory" ? directoryRows(node) : sessionRows(node);
+  attachDetailHandlers(body);
+  body.scrollTop = scrollTop;
+}
+
+function closeDetail() {
+  view.selected = null;
+  if (nodeSel) nodeSel.classed("selected", false);
+  document.getElementById("detail").classList.remove("open");
+}
+
+document.getElementById("detailClose").addEventListener("click", closeDetail);
+
+/* ---------------------------------------------------------------- zoom --- */
+
+function fitView(animate) {
+  if (!view.nodes.length) return;
+
+  const xs = [];
+  const ys = [];
+  for (const n of view.nodes) {
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    xs.push(n.x - n.r, n.x + n.r);
+    ys.push(n.y - n.r, n.y + n.r);
+  }
+  if (!xs.length) return;
+
+  const minX = Math.min.apply(null, xs);
+  const maxX = Math.max.apply(null, xs);
+  const minY = Math.min.apply(null, ys);
+  const maxY = Math.max.apply(null, ys);
+
+  const pad = 30;
+  const panelOpen = document.getElementById("detail").classList.contains("open");
+  const availW = Math.max(120, W - pad * 2 - (panelOpen ? 370 : 0));
+  const availH = Math.max(120, H - 170);
+
+  const scale = clamp(
+    Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(1, maxY - minY), 1.7),
+    0.18,
+    1.7
+  );
+
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2 + 22;
+  const viewCx = panelOpen ? (W - 370) / 2 : W / 2;
+  const transform = d3.zoomIdentity
+    .translate(viewCx - scale * cx, H / 2 - scale * cy)
+    .scale(scale);
+
+  if (animate === false) {
+    SVG.call(zoom.transform, transform);
+  } else {
+    SVG.transition().duration(600).call(zoom.transform, transform);
+  }
+}
+
+addEventListener("resize", () => {
+  W = innerWidth;
+  H = innerHeight;
+
+  if (!view.nodes.length) return;
+  placeDirectories(view.nodes);
+
+  if (view.sim) {
+    view.sim.force("x", d3.forceX(xTarget).strength(xyStrength));
+    view.sim.force("y", d3.forceY(yTarget).strength(xyStrength));
+    view.sim.alpha(0.25).restart();
+  }
+});
+
+/* ---------------------------------------------------------------- poll --- */
+
+function markOffline() {
+  const dot = document.getElementById("liveDot");
+  dot.className = "live-dot offline";
+  document.getElementById("serverInfo").textContent = "monitor offline";
+  document.getElementById("stale").classList.remove("hidden");
+}
+
+async function poll() {
+  let delay = 1000;
+
+  try {
+    const res = await fetch("/sessions.json?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    render(data);
+  } catch (err) {
+    markOffline();
+    delay = 1500;
+  }
+
+  setTimeout(poll, delay);
+}
+
+poll();
+</script>
+</body>
+</html>

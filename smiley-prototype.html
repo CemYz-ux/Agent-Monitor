@@ -1,0 +1,1006 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smiley monitor prototype</title>
+<style>
+  :root {
+    --bg: #0b0d16;
+    --panel: rgba(16, 19, 32, .92);
+    --border: rgba(110, 130, 200, .2);
+    --text: #d6ddff;
+    --muted: #8590c0;
+    --dim: #545c88;
+    --task: #73daca;
+    --done: #9ece6a;
+    --failed: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  svg { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  header {
+    position: fixed; top: 16px; left: 20px; right: 20px; z-index: 2;
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+    pointer-events: none;
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+  header p { margin: 3px 0 0; color: var(--dim); font-size: 11.5px; }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; pointer-events: auto; }
+  button, .controls a {
+    padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); font: inherit; font-size: 12px; cursor: pointer; text-decoration: none;
+    transition: border-color .15s, background .15s;
+  }
+  button:hover, .controls a:hover { border-color: rgba(115, 218, 202, .5); background: rgba(115, 218, 202, .07); }
+  button.primary { border-color: rgba(115, 218, 202, .45); color: var(--task); }
+
+  #log {
+    position: fixed; left: 20px; bottom: 18px; z-index: 2;
+    width: min(380px, calc(100vw - 40px));
+    display: flex; flex-direction: column; gap: 3px;
+    font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; color: var(--dim);
+    pointer-events: none;
+  }
+  #log div:last-child { color: var(--muted); }
+
+  .face-name { fill: #e6ebff; font-weight: 600; font-size: 13px; }
+  .face-act { fill: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: 10.5px; }
+  .face.holder .face-act { fill: var(--task); }
+  .ring { fill: none; stroke: var(--task); stroke-width: 2.5; stroke-dasharray: 11 7; }
+  .link { stroke: rgba(130, 150, 220, .18); stroke-width: 1.5; fill: none; }
+  .link.handoff { stroke: rgba(115, 218, 202, .7); stroke-dasharray: 6 5; animation: dash .8s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -22; } }
+  .token-label {
+    font-size: 11px; font-weight: 600; fill: #dffcf6;
+    paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round;
+  }
+  .sign { font-weight: 800; font-family: "Segoe UI", system-ui, sans-serif; }
+
+  @media (max-width: 640px) {
+    header { flex-direction: column; }
+    .controls { justify-content: flex-start; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .link.handoff { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Smiley monitor · prototype</h1>
+    <p id="modeText">Connecting to the monitor…</p>
+  </div>
+  <div class="controls">
+    <span id="demoControls" class="controls" hidden>
+      <button class="primary" id="btnHand">Hand off a task</button>
+      <button id="btnPause">Pause script</button>
+      <button id="btnReset">Reset</button>
+    </span>
+    <a id="galleryLink" href="?gallery">All expressions</a>
+  </div>
+</header>
+
+<svg id="stage" aria-label="Animated agent faces">
+  <g id="links"></g>
+  <g id="faces"></g>
+  <g id="tokens"></g>
+</svg>
+
+<div id="log"></div>
+
+<script>
+"use strict";
+
+const NS = "http://www.w3.org/2000/svg";
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const svg = document.getElementById("stage");
+const linkLayer = document.getElementById("links");
+const faceLayer = document.getElementById("faces");
+const tokenLayer = document.getElementById("tokens");
+
+const INK = "#2a1c10";
+const ARROW = "→";
+
+// Flat colours per status: [fill, outline].
+const PALETTE = {
+  idle:        ["#b4bce0", "#6d77a8"],
+  running:     ["#ffd23f", "#c98a0e"],
+  delegating:  ["#ffd23f", "#c98a0e"],
+  waiting:     ["#ffb35c", "#c9721c"],
+  done:        ["#a3e070", "#5c9c33"],
+  failed:      ["#ff8fa1", "#c9465f"],
+  interrupted: ["#c7a6ff", "#8a63d2"],
+};
+
+let W = innerWidth;
+let H = innerHeight;
+let mouse = null;
+let realNow = performance.now();
+let simNow = 0;            // advances only while the demo script is not paused
+let paused = false;
+
+function el(tag, attrs, parent) {
+  const node = document.createElementNS(NS, tag);
+  for (const k in attrs) node.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const ease = (t) => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+// Frame-rate independent smoothing toward a target.
+const approach = (v, target, rate, dt) => v + (target - v) * (1 - Math.exp(-rate * dt));
+const f2 = (n) => n.toFixed(2);
+
+function truncate(s, n) {
+  s = String(s || "");
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+function log(text) {
+  const box = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = text;
+  box.appendChild(line);
+  while (box.children.length > 5) box.removeChild(box.firstChild);
+}
+
+/* --------------------------------------------------------- expressions --- */
+// Every status has its own face. Values are targets; the face eases toward them.
+//   smile -1..1   open 0..1 (mouth)   mw mouth width   mx mouth shift   tilt crooked mouth
+//   lid eye openness   happy ^-eyes   line –-eyes   brows visible
+//   lift* raise a brow   tilt* + lowers inner end (focus/anger), - raises it (worry)
+//   cheeks blush   tear / think / ask / zz extras
+
+const NEUTRAL = {
+  smile: .3, open: 0, mw: 1, mx: 0, tilt: 0,
+  lid: 1, happy: 0, line: 0,
+  brows: 0, liftL: 0, liftR: 0, tiltL: 0, tiltR: 0,
+  cheeks: 0, tear: 0, think: 0, ask: 0, zz: 0,
+};
+
+const EXPRESSIONS = {
+  // calm, waiting for something to happen
+  idle:        { smile: .35 },
+  // a subagent with nothing to do dozes off
+  sleepy:      { smile: .12, mw: .65, lid: .12, zz: 1 },
+  // working: eyes up toward the thought bubble, one brow up, "hmm" mouth to the side
+  thinking:    { smile: .02, mw: .5, mx: .2, tilt: .5, brows: 1, liftL: .9, tiltR: .55, think: 1 },
+  // handed work off: wide-eyed and attentive
+  watching:    { smile: .75, open: .45, mw: .9, lid: 1.18, brows: 1, liftL: .8, liftR: .8, tiltL: -.3, tiltR: -.3 },
+  // needs approval: question mark, one brow up, crooked mouth
+  asking:      { smile: -.05, mw: .7, tilt: -.7, brows: 1, liftR: 1, tiltL: .45, ask: 1 },
+  // finished: ^ ^ eyes and a big grin
+  happy:       { smile: 1, open: .4, happy: 1, cheeks: 1 },
+  // failed: frown, worried brows, a tear
+  sad:         { smile: -.85, mw: .85, lid: .85, brows: 1, tiltL: -1, tiltR: -1, tear: 1 },
+  // interrupted: flat eyes, flat mouth, lowered brows
+  annoyed:     { smile: 0, mw: .75, tilt: .25, line: 1, brows: 1, tiltL: .7, tiltR: .7, liftL: -.2, liftR: -.2 },
+  // short reactions
+  surprised:   { smile: 0, open: .8, mw: .5, lid: 1.22, brows: 1, liftL: 1, liftR: 1 },
+  joy:         { smile: 1, open: .5, happy: 1, cheeks: 1 },
+  worried:     { smile: -.7, open: .1, lid: .9, brows: 1, tiltL: -1, tiltR: -1 },
+};
+
+const LABELS = {
+  idle: "idle", sleepy: "idle subagent", thinking: "working", watching: "delegating",
+  asking: "needs approval", happy: "done", sad: "failed", annoyed: "interrupted",
+};
+
+function expressionFor(face) {
+  switch (face.status) {
+    case "running": return "thinking";
+    case "delegating": return "watching";
+    case "waiting": return "asking";
+    case "done": return "happy";
+    case "failed": return "sad";
+    case "interrupted": return "annoyed";
+    default: return face.sub ? "sleepy" : "idle";
+  }
+}
+
+/* --------------------------------------------------------------- faces --- */
+
+const faces = [];
+const tokens = [];
+const byId = new Map();
+
+class Face {
+  constructor(opts) {
+    this.id = opts.id;
+    this.agent = opts.agent;
+    this.r = opts.r;
+    this.parent = opts.parent || null;
+    this.sub = !!(opts.parent || opts.sub);
+    this.x = opts.x; this.y = opts.y;
+    this.tx = opts.x; this.ty = opts.y;
+    this.phase = rand(0, Math.PI * 2);
+
+    this.status = "idle";        // idle | running | delegating | waiting | done | failed | interrupted
+    this.activity = "";
+    this.task = "";
+    this.dirLabel = "";
+    this.caption = null;         // fixed caption (gallery)
+    this.doneUntil = 0;          // live mode: show "done" for a moment after finishing
+    this.lastState = null;       // live mode: session state from the previous snapshot
+
+    this.scale = 0;              // pops in
+    this.bump = 0;               // short bounce on events
+    this.leaving = false;
+
+    this.lidBlink = 1;
+    this.blinkUntil = 0;
+    this.nextBlink = realNow + rand(800, 3000);
+    this.gx = 0; this.gy = 0;    // smoothed look direction (-1..1)
+    this.nextGlance = 0;
+    this.glance = null;
+    this.focusIndex = 0;
+    this.reaction = null;        // {kind, until}
+    this.e = Object.assign({}, NEUTRAL, EXPRESSIONS.idle);
+
+    byId.set(this.id, this);
+    this.build();
+    this.setStatus("idle");
+  }
+
+  build() {
+    const r = this.r;
+    // Start invisible at the spawn point, so a new face never flashes at (0,0).
+    this.g = el("g", { class: "face", transform: "translate(" + f2(this.x) + "," + f2(this.y) + ") scale(0)" }, faceLayer);
+    this.ring = el("circle", { class: "ring", r: r + 9, opacity: 0 }, this.g);
+    this.body = el("g", {}, this.g);
+    this.ball = el("circle", { r, "stroke-width": Math.max(2.5, r * .06) }, this.body);
+
+    this.features = el("g", {}, this.body);
+    this.eyes = [-1, 1].map((side) => {
+      const wrap = el("g", {}, this.features);
+      const lid = el("g", {}, wrap);
+      el("circle", { r: r * .1, fill: INK }, lid);
+      const happy = el("path", {
+        d: "M " + f2(-r * .11) + " " + f2(r * .03) + " Q 0 " + f2(-r * .13) + " " + f2(r * .11) + " " + f2(r * .03),
+        fill: "none", stroke: INK, "stroke-width": r * .06, "stroke-linecap": "round", opacity: 0,
+      }, wrap);
+      const line = el("path", {
+        d: "M " + f2(-r * .11) + " 0 L " + f2(r * .11) + " 0",
+        fill: "none", stroke: INK, "stroke-width": r * .06, "stroke-linecap": "round", opacity: 0,
+      }, wrap);
+      return { side, wrap, lid, happy, line };
+    });
+    this.brows = [-1, 1].map(() => el("path", {
+      fill: "none", stroke: INK, "stroke-width": r * .055, "stroke-linecap": "round", opacity: 0,
+    }, this.features));
+    this.cheeks = [-1, 1].map((side) => el("ellipse", {
+      cx: side * r * .48, cy: r * .2, rx: r * .13, ry: r * .07, fill: "#ff6b8a", opacity: 0,
+    }, this.features));
+    this.mouth = el("path", {
+      fill: INK, stroke: INK, "stroke-width": r * .065, "stroke-linejoin": "round", "stroke-linecap": "round",
+    }, this.features);
+    const k = r / 44;
+    this.tear = el("path", {
+      d: "M 0 " + f2(-7 * k) + " C " + f2(5 * k) + " 0 " + f2(5 * k) + " " + f2(6 * k) + " 0 " + f2(6 * k) +
+         " C " + f2(-5 * k) + " " + f2(6 * k) + " " + f2(-5 * k) + " 0 0 " + f2(-7 * k) + " Z",
+      fill: "#5aa9ff", stroke: "#2f6fc0", "stroke-width": 1, opacity: 0,
+    }, this.features);
+
+    // Extras stay put while the features slide around.
+    this.thought = el("g", { opacity: 0 }, this.body);
+    const bx = r * 1.05, by = -r * 1.38;
+    el("circle", { cx: r * .62, cy: -r * .82, r: r * .07, fill: "#eef1ff", stroke: INK, "stroke-width": 1.5 }, this.thought);
+    el("circle", { cx: r * .78, cy: -r * 1.02, r: r * .11, fill: "#eef1ff", stroke: INK, "stroke-width": 1.5 }, this.thought);
+    el("ellipse", { cx: bx, cy: by, rx: r * .56, ry: r * .34, fill: "#eef1ff", stroke: INK, "stroke-width": 1.5 }, this.thought);
+    this.thinkDots = [-1, 0, 1].map((i) =>
+      el("circle", { cx: bx + i * r * .2, cy: by, r: r * .065, fill: INK }, this.thought));
+
+    this.ask = el("text", {
+      class: "sign", x: r * .62, y: -r * .62, "font-size": r * .62, fill: "#ffb35c",
+      stroke: INK, "stroke-width": 1.5, "paint-order": "stroke", opacity: 0,
+    }, this.body);
+    this.ask.textContent = "?";
+
+    this.zz = [0, 1].map(() => {
+      const t = el("text", { class: "sign", "font-size": r * .32, fill: "#c9d2ff", opacity: 0 }, this.body);
+      t.textContent = "z";
+      return t;
+    });
+
+    this.name = el("text", { class: "face-name", "text-anchor": "middle" }, this.g);
+    this.name.textContent = this.agent;
+    this.act = el("text", { class: "face-act", "text-anchor": "middle" }, this.g);
+
+    if (this.parent) this.link = el("path", { class: "link" }, linkLayer);
+  }
+
+  setStatus(status, activity) {
+    if (status !== this.status) this.bump = 1;
+    this.status = status;
+    if (activity !== undefined) this.activity = activity;
+    const [fill, stroke] = PALETTE[status] || PALETTE.idle;
+    this.ball.setAttribute("fill", fill);
+    this.ball.setAttribute("stroke", stroke);
+  }
+
+  react(kind, ms) {
+    this.reaction = { kind, until: realNow + ms };
+    this.bump = 1;
+  }
+
+  runningChildren() {
+    return faces.filter((f) => f.parent === this && f.status === "running" && !f.leaving);
+  }
+
+  /* -- where the face wants to look, in screen coordinates -- */
+  chooseLook() {
+    // A task token travelling to or from this face beats everything.
+    const token = tokens.find((t) => t.from === this || t.to === this);
+    if (token && token.pos) return token.pos;
+
+    const r = this.r;
+    switch (this.status) {
+      case "delegating": {
+        const kids = this.runningChildren();
+        if (kids.length) {
+          if (realNow > this.nextGlance) {
+            this.focusIndex = (this.focusIndex + 1) % kids.length;
+            this.nextGlance = realNow + rand(1100, 2200);
+          }
+          const kid = kids[this.focusIndex % kids.length];
+          return { x: kid.x, y: kid.y };
+        }
+        break;
+      }
+      case "running":
+        // Mostly gazing up at the thought bubble, now and then down at the work.
+        if (realNow > this.nextGlance) {
+          this.glance = Math.random() < .3 ? { x: this.x - r * .3, y: this.y + r * 3 } : null;
+          this.nextGlance = realNow + (this.glance ? rand(600, 1000) : rand(1800, 3400));
+        }
+        return this.glance || { x: this.x + r * 1.3, y: this.y - r * 1.8 + Math.sin(realNow / 900) * r * .3 };
+      case "waiting":
+        // Asking you: looks at the mouse, or straight out of the screen.
+        return mouse || { x: this.x, y: this.y };
+      case "failed":
+        // Sad faces look at you when the mouse is around, otherwise at the ground.
+        return mouse || { x: this.x + Math.sin(realNow / 1600 + this.phase) * r, y: this.y + r * 3 };
+      case "interrupted":
+        return { x: this.x - r * 3, y: this.y + r * .3 };
+      case "done":
+        return this.parent ? { x: this.parent.x, y: this.parent.y } : { x: this.x, y: this.y };
+    }
+
+    if (this.sub) return { x: this.x, y: this.y + r * 2 };   // dozing
+    if (mouse) return mouse;
+    if (realNow > this.nextGlance) {
+      const busy = faces.filter((f) => f !== this && (f.status === "running" || f.status === "delegating"));
+      this.glance = busy.length && Math.random() < .6
+        ? busy[Math.floor(Math.random() * busy.length)]
+        : { x: this.x + rand(-300, 300), y: this.y + rand(-200, 200) };
+      this.nextGlance = realNow + rand(1200, 3200);
+    }
+    return this.glance ? { x: this.glance.x, y: this.glance.y } : { x: this.x, y: this.y + 50 };
+  }
+
+  update(dt) {
+    this.x = approach(this.x, this.tx, 4, dt);
+    this.y = approach(this.y, this.ty, 4, dt);
+    this.scale = approach(this.scale, this.leaving ? 0 : 1, this.leaving ? 7 : 5, dt);
+    this.bump = approach(this.bump, 0, 3.2, dt);
+
+    const target = this.chooseLook();
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const strength = clamp(dist / (this.r * 2.2), 0, 1);
+    this.gx = approach(this.gx, (dx / dist) * strength, 9, dt);
+    this.gy = approach(this.gy, (dy / dist) * strength, 9, dt);
+
+    const reaction = this.reaction && realNow < this.reaction.until ? this.reaction.kind : null;
+    const target_e = Object.assign({}, NEUTRAL, EXPRESSIONS[reaction || this.forcedExpression || expressionFor(this)]);
+
+    // Blink only with open eyes: asleep, ^ ^ and – – faces keep their eyes as they are.
+    const eyesOpen = target_e.lid > .5 && target_e.happy < .5 && target_e.line < .5;
+    if (!eyesOpen) {
+      this.blinkUntil = 0;
+    } else if (realNow > this.nextBlink) {
+      this.blinkUntil = realNow + 130;
+      this.nextBlink = realNow + (Math.random() < .2 ? 260 : rand(1800, 5200));
+    }
+    this.lidBlink = approach(this.lidBlink, realNow < this.blinkUntil ? .05 : 1, realNow < this.blinkUntil ? 40 : 14, dt);
+    if (this.status === "running" && !reaction) {
+      // a little "hmm" while thinking
+      target_e.mx += Math.sin(realNow / 700 + this.phase) * .05;
+    }
+    for (const key in this.e) this.e[key] = approach(this.e[key], target_e[key], 8, dt);
+  }
+
+  render() {
+    const r = this.r;
+    const e = this.e;
+    const s = this.scale * (1 + (REDUCED ? 0 : this.bump * .12 * Math.sin(realNow / 45)));
+    this.g.setAttribute("transform", "translate(" + f2(this.x) + "," + f2(this.y) + ") scale(" + s.toFixed(3) + ")");
+
+    const holder = this.status === "running";
+    this.g.classList.toggle("holder", holder);
+    this.ring.setAttribute("opacity", holder ? .9 : 0);
+    this.ring.setAttribute("transform", "rotate(" + ((realNow / 30) % 360).toFixed(1) + ")");
+
+    // Features slide toward the gaze; flat, no squash.
+    const fx = this.gx * r * .2;
+    const fy = this.gy * r * .16;
+    this.features.setAttribute("transform", "translate(" + f2(fx) + "," + f2(fy) + ")");
+
+    const lid = clamp(e.lid * this.lidBlink, .04, 1.25);
+    const openEyes = clamp((1 - e.happy) * (1 - e.line), 0, 1);
+    for (const eye of this.eyes) {
+      const ex = eye.side * r * .27 + this.gx * r * .035;
+      const ey = -r * .12 + this.gy * r * .03;
+      eye.wrap.setAttribute("transform", "translate(" + f2(ex) + "," + f2(ey) + ")");
+      eye.lid.setAttribute("transform", "scale(1," + lid.toFixed(3) + ")");
+      eye.lid.setAttribute("opacity", f2(openEyes));
+      eye.happy.setAttribute("opacity", f2(e.happy));
+      eye.line.setAttribute("opacity", f2(e.line * (1 - e.happy)));
+    }
+
+    // Brows: lift raises the whole brow, tilt > 0 lowers the inner end, < 0 raises it.
+    this.brows.forEach((brow, i) => {
+      const side = i === 0 ? -1 : 1;
+      const lift = (side < 0 ? e.liftL : e.liftR) * r * .1;
+      const tilt = (side < 0 ? e.tiltL : e.tiltR) * r * .08;
+      const y = -r * .4 - lift;
+      brow.setAttribute("d",
+        "M " + f2(side * r * .42) + " " + f2(y - tilt * .3) +
+        " L " + f2(side * r * .14) + " " + f2(y + tilt));
+      brow.setAttribute("opacity", f2(clamp(e.brows, 0, 1)));
+    });
+
+    this.cheeks.forEach((c) => c.setAttribute("opacity", f2(clamp(e.cheeks * .5, 0, .5))));
+
+    const cx = e.mx * r;
+    const w = r * (.3 + .06 * Math.max(0, e.smile)) * e.mw * (1 - e.open * .3);
+    const y0 = r * .3;
+    const corner = y0 - e.smile * r * .07;
+    const tilt = e.tilt * r * .06;
+    const upper = y0 + e.smile * r * .16;
+    const lower = upper + e.open * r * .4 + Math.max(0, e.smile) * e.open * r * .1;
+    this.mouth.setAttribute("d",
+      "M " + f2(cx - w) + " " + f2(corner + tilt) +
+      " Q " + f2(cx) + " " + f2(upper) + " " + f2(cx + w) + " " + f2(corner - tilt) +
+      " Q " + f2(cx) + " " + f2(lower) + " " + f2(cx - w) + " " + f2(corner + tilt) + " Z");
+
+    // Tear rolls down from the left eye, over and over.
+    const tp = (realNow / 1500 + this.phase) % 1;
+    this.tear.setAttribute("transform", "translate(" + f2(-r * .3) + "," + f2(r * .06 + tp * r * .42) + ")");
+    this.tear.setAttribute("opacity", f2(e.tear * (tp < .1 ? tp * 10 : 1 - (tp - .1) / .9)));
+
+    // Thought bubble with dots that bounce in turn.
+    this.thought.setAttribute("opacity", f2(clamp(e.think, 0, 1)));
+    if (e.think > .02) {
+      this.thinkDots.forEach((dot, i) => {
+        const b = Math.max(0, Math.sin(realNow / 220 - i * .9));
+        dot.setAttribute("transform", "translate(0," + f2(-b * r * .07) + ")");
+        dot.setAttribute("opacity", f2(.45 + .55 * b));
+      });
+    }
+
+    this.ask.setAttribute("opacity", f2(clamp(e.ask, 0, 1)));
+    this.ask.setAttribute("transform", "translate(0," + f2(Math.sin(realNow / 380) * r * .05) + ") rotate(12 " + f2(r * .75) + " " + f2(-r * .8) + ")");
+
+    this.zz.forEach((z, i) => {
+      const p = (realNow / 2400 + i * .5) % 1;
+      z.setAttribute("x", f2(r * (.55 + p * .35)));
+      z.setAttribute("y", f2(-r * (.55 + p * .6)));
+      z.setAttribute("font-size", f2(r * (.22 + p * .2)));
+      z.setAttribute("opacity", f2(clamp(e.zz, 0, 1) * Math.sin(Math.PI * p)));
+    });
+
+    this.name.setAttribute("y", r + 22);
+    this.act.setAttribute("y", r + 38);
+    let caption = this.caption;
+    if (caption == null) {
+      if (this.status === "running" || this.status === "waiting") caption = this.activity;
+      else if (this.status === "delegating") caption = "watching " + this.runningChildren().map((f) => f.agent).join(", ");
+      else if (this.status === "done") caption = "✓ " + truncate(this.task || "done", 30);
+      else if (this.status === "failed") caption = "✗ " + truncate(this.task || "failed", 30);
+      else if (this.status === "interrupted") caption = "■ " + truncate(this.task || "interrupted", 30);
+      else caption = this.sub ? truncate(this.task, 30) : (this.dirLabel ? "idle · " + this.dirLabel : "idle");
+    }
+    this.act.textContent = truncate(caption, 40);
+
+    if (this.link) {
+      const p = this.parent;
+      this.link.classList.toggle("handoff", this.status === "running" && p.status === "delegating");
+      this.link.setAttribute("opacity", f2(this.scale));
+      // Trim the link to the two ball edges so it never runs through captions.
+      const dx = this.x - p.x, dy = this.y - p.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const ux = dx / d, uy = dy / d;
+      const a = p.r + 12, b = this.r + 12;
+      this.link.setAttribute("visibility", d > a + b ? "visible" : "hidden");
+      this.link.setAttribute("d",
+        "M " + f2(p.x + ux * a) + " " + f2(p.y + uy * a) +
+        " L " + f2(this.x - ux * b) + " " + f2(this.y - uy * b));
+    }
+  }
+
+  remove() {
+    this.g.remove();
+    if (this.link) this.link.remove();
+    if (byId.get(this.id) === this) byId.delete(this.id);
+    const i = faces.indexOf(this);
+    if (i >= 0) faces.splice(i, 1);
+  }
+
+  leave() {
+    if (this.leaving) return;
+    this.leaving = true;
+    setTimeout(() => this.remove(), 700);
+  }
+}
+
+/* -------------------------------------------------------------- layout --- */
+
+let root = null;
+let galleryMode = false;
+
+function layout() {
+  if (galleryMode) return layoutGallery();
+  const roots = faces.filter((f) => !f.parent && !f.leaving);
+  const narrow = W < 760;
+  const single = roots.length === 1 && !narrow;
+
+  roots.forEach((r, i) => {
+    if (single) { r.tx = W * .36; r.ty = H * .5; }
+    else { r.tx = W * (i + .5) / roots.length; r.ty = H * (narrow ? .3 : .36); }
+
+    const kids = faces.filter((f) => f.parent === r && !f.leaving);
+    const n = kids.length;
+    const radius = single
+      ? Math.min(W * .3, H * .36, 330)
+      : Math.min(W / roots.length * .42, H * .4, 240);
+    // Fan out gradually: two subagents sit close together, six use the full arc.
+    const spread = Math.min(Math.PI * .85, (n - 1) * Math.PI * (single ? .2 : .17));
+    const center = single ? 0 : Math.PI / 2;
+    kids.forEach((kid, k) => {
+      const a = center + (n === 1 ? 0 : (k / (n - 1) - .5) * spread);
+      kid.tx = r.tx + Math.cos(a) * radius;
+      kid.ty = r.ty + Math.sin(a) * radius;
+    });
+  });
+}
+
+/* -------------------------------------------------------------- tokens --- */
+
+class Token {
+  constructor(from, to, label, kind, result) {
+    this.from = from; this.to = to; this.label = label;
+    this.kind = kind; this.result = result;
+    this.start = simNow;
+    this.duration = REDUCED ? 1 : (kind === "out" ? 1200 : 1400);
+    this.pos = null;
+    const color = kind === "out" ? "var(--task)" : result === "failed" ? "var(--failed)" : "var(--done)";
+    this.g = el("g", {}, tokenLayer);
+    el("circle", { r: 7, fill: color, stroke: INK, "stroke-width": 1.5 }, this.g);
+    const text = el("text", { class: "token-label", x: 13, y: 4 }, this.g);
+    text.textContent = kind === "out" ? truncate(label, 32) : (result === "failed" ? "✗ failed" : "✓ done");
+    this.done = new Promise((resolve) => { this.resolve = resolve; });
+  }
+
+  update() {
+    const t = clamp((simNow - this.start) / this.duration, 0, 1);
+    const e = ease(t);
+    const a = this.from, b = this.to;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const ux = dx / dist, uy = dy / dist;
+    const sx = a.x + ux * a.r * .9, sy = a.y + uy * a.r * .9;
+    const ex = b.x - ux * b.r * .9, ey = b.y - uy * b.r * .9;
+    // Arc above the straight line so the handoff reads as a throw.
+    const lift = Math.sin(Math.PI * e) * Math.min(70, dist * .22) * (this.kind === "out" ? 1 : -1);
+    this.pos = { x: sx + (ex - sx) * e + uy * lift, y: sy + (ey - sy) * e - ux * lift };
+    const s = .8 + .2 * Math.sin(Math.PI * e);
+    this.g.setAttribute("transform", "translate(" + f2(this.pos.x) + "," + f2(this.pos.y) + ") scale(" + s.toFixed(3) + ")");
+    if (t >= 1) {
+      this.g.remove();
+      tokens.splice(tokens.indexOf(this), 1);
+      this.resolve();
+    }
+  }
+}
+
+/* --------------------------------------------------------------- demo --- */
+
+let childCount = 0;
+const waiters = [];
+
+function wait(ms) {
+  const until = simNow + ms;
+  return new Promise((resolve) => waiters.push({ until, resolve }));
+}
+
+function reset() {
+  for (const f of faces.slice()) f.remove();
+  for (const t of tokens) t.g.remove();
+  tokens.length = 0;
+  root = new Face({ id: "root", agent: "build", r: 74, x: W * .36, y: H * .5 });
+  faces.push(root);
+  layout();
+}
+
+async function handoff(parent, agent, task) {
+  // Keep the stage readable: drop the oldest finished subagent beyond six.
+  const kids = faces.filter((f) => f.parent === parent && !f.leaving);
+  if (kids.length >= 6) {
+    const old = kids.find((f) => f.status !== "running" && f.status !== "waiting");
+    if (old) old.leave();
+  }
+
+  const child = new Face({ id: "c" + (++childCount), agent, r: 44, parent, x: parent.x, y: parent.y });
+  child.task = task;
+  faces.push(child);
+  layout();
+
+  parent.setStatus("delegating");
+  log(parent.agent + " " + ARROW + " " + agent + ": " + task);
+
+  await wait(450);                       // let the new face pop out first
+  const token = new Token(parent, child, task, "out");
+  tokens.push(token);
+  await token.done;
+
+  child.react("surprised", 700);
+  child.setStatus("running", "starting");
+  return child;
+}
+
+async function finish(child, result) {
+  const parent = child.parent;
+  child.setStatus(result, "");
+  log(child.agent + " " + result + ": " + child.task);
+
+  const token = new Token(child, parent, child.task, "back", result === "done" ? "done" : "failed");
+  tokens.push(token);
+  await token.done;
+
+  parent.react(result === "done" ? "joy" : "worried", 1700);
+  if (!parent.runningChildren().length) parent.setStatus("running", "reading results");
+  setTimeout(() => { if (child.status === "done") child.setStatus("idle"); }, 4000);
+}
+
+const TASKS = [
+  ["critic", "Verify web roster consistency"],
+  ["digestion", "Digest the meeting notes"],
+  ["collector", "Collect sources on WebGPU"],
+  ["researcher", "Compare three vector stores"],
+  ["critic", "Review the parser changes"],
+  ["digestion", "Summarise yesterday's inbox"],
+];
+const ACTIVITIES = [
+  "grep \"web\" in agents", "read critic.opencode.yml", "edit notes-2026-10-31.md",
+  "shell npm test", "read CONCEPT.md (lines 246-253)", "glob brain/**/*.md", "webfetch docs.example.org",
+];
+
+async function manualHandoff() {
+  const [agent, task] = TASKS[Math.floor(Math.random() * TASKS.length)];
+  const child = await handoff(root, agent, task);
+  for (let i = 0; i < 3; i++) {
+    await wait(rand(1200, 2200));
+    child.activity = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
+  }
+  const roll = Math.random();
+  await finish(child, roll < .2 ? "failed" : roll < .3 ? "interrupted" : "done");
+}
+
+async function scenario() {
+  for (;;) {
+    root.setStatus("running", "read CONCEPT.md (lines 246-253)");
+    log("build is reading CONCEPT.md");
+    await wait(2600);
+    root.activity = "grep \"subagent\" in brain/agents";
+    await wait(2000);
+
+    const critic = await handoff(root, "critic", "Verify web roster consistency");
+    await wait(900); critic.activity = "grep \"webfetch\" in agents";
+    await wait(1100);
+
+    const digestion = await handoff(root, "digestion", "Digest the meeting notes");
+    await wait(700); digestion.activity = "edit notes-2026-10-31.md";
+    await wait(1600); critic.activity = "read critic.opencode.yml";
+    await wait(2000);
+    await finish(critic, "done");
+
+    await wait(1200);
+    digestion.setStatus("waiting", "needs approval: shell");
+    log("digestion needs approval to run a shell command");
+    await wait(2600);
+    digestion.setStatus("running", "shell node brain/tools/brain.mjs index");
+    await wait(2000);
+    await finish(digestion, "failed");
+
+    await wait(2200);
+    root.activity = "edit CONCEPT.md";
+    await wait(1800);
+    const collector = await handoff(root, "collector", "Collect sources on WebGPU");
+    await wait(900); collector.activity = "webfetch gpuweb.github.io";
+    await wait(2400);
+    await finish(collector, "interrupted");
+
+    await wait(2600);
+    root.setStatus("idle", "");
+    log("build is idle");
+    await wait(4500);
+  }
+}
+
+function startDemo(reason) {
+  document.getElementById("modeText").textContent =
+    "Demo with simulated handoffs (" + reason + "). Idle faces follow your mouse.";
+  document.getElementById("demoControls").hidden = false;
+  reset();
+  scenario();
+}
+
+/* ------------------------------------------------------------ gallery --- */
+// ?gallery shows every expression side by side.
+
+function startGallery() {
+  galleryMode = true;
+  document.getElementById("modeText").textContent = "Every status has its own face. Move the mouse; idle faces follow it.";
+  const link = document.getElementById("galleryLink");
+  link.textContent = "Back to live view";
+  link.href = location.pathname;
+
+  const list = [
+    ["idle", "idle", false], ["idle", "sleepy", true], ["running", "thinking", true], ["delegating", "watching", false],
+    ["waiting", "asking", true], ["done", "happy", true], ["failed", "sad", true], ["interrupted", "annoyed", true],
+  ];
+  list.forEach(([status, expr], i) => {
+    const face = new Face({ id: "g" + i, agent: LABELS[expr], r: 52, sub: list[i][2], x: W / 2, y: H / 2 });
+    face.setStatus(status);
+    face.caption = expr;
+    face.forcedExpression = expr;
+    faces.push(face);
+  });
+  layout();
+}
+
+function layoutGallery() {
+  const cols = W < 700 ? 2 : 4;
+  const rows = Math.ceil(faces.length / cols);
+  const cellW = Math.min(240, (W - 40) / cols);
+  const cellH = Math.min(230, (H - 120) / rows);
+  faces.forEach((f, i) => {
+    const c = i % cols, row = Math.floor(i / cols);
+    f.tx = W / 2 + (c - (cols - 1) / 2) * cellW;
+    f.ty = 90 + cellH * (row + .45) + (H - 120 - cellH * rows) / 2;
+  });
+}
+
+/* ---------------------------------------------------------- live data --- */
+// Reads the monitor's /sessions.json once per second and turns it into faces.
+
+const MAX_ROOTS = 3;
+const MAX_KIDS = 6;
+let liveHandoffs = null;     // Map key -> handoff; null until the first snapshot
+
+function isBusy(state) { return state === "running" || state === "waiting"; }
+
+function subtreeBusy(s) {
+  return isBusy(s.state) || (s.children || []).some(subtreeBusy);
+}
+
+// Decide which sessions get a face: busy root sessions (or the latest one),
+// each with up to six subagents, busiest and newest first.
+function pickSessions(data) {
+  const roots = [];
+  for (const dir of data.directories || []) {
+    for (const s of dir.sessions || []) roots.push({ s, dirLabel: dir.label });
+  }
+
+  let shown = roots.filter((r) => subtreeBusy(r.s));
+  if (!shown.length) shown = roots.slice();
+  shown.sort((a, b) => (b.s.updatedAt || 0) - (a.s.updatedAt || 0));
+  shown = shown.slice(0, MAX_ROOTS);
+
+  const picked = [];
+  for (const r of shown) {
+    picked.push({ s: r.s, parentId: null, dirLabel: r.dirLabel });
+
+    // Flatten all descendants; nested ones hang off the root they belong to.
+    const kids = [];
+    const walk = (s) => { for (const c of s.children || []) { kids.push(c); walk(c); } };
+    walk(r.s);
+
+    const handedOff = new Set((r.s.delegations || []).map((d) => d.childId));
+    kids.sort((a, b) =>
+      (isBusy(b.state) - isBusy(a.state)) ||
+      (handedOff.has(b.id) - handedOff.has(a.id)) ||
+      ((byId.get(b.id) ? 1 : 0) - (byId.get(a.id) ? 1 : 0)) ||
+      ((b.updatedAt || 0) - (a.updatedAt || 0)));
+
+    // Oldest first so the fan keeps a stable order while sessions come and go.
+    const chosen = kids.slice(0, MAX_KIDS).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    for (const c of chosen) picked.push({ s: c, parentId: r.s.id, dirLabel: r.dirLabel });
+  }
+  return picked;
+}
+
+function resolveLiveHandoffs() {
+  const handoffs = new Map();
+  for (const face of faces) {
+    if (face.leaving || !face.data || !isBusy(face.data.state)) continue;
+    const used = new Set();
+    for (const del of face.data.delegations || []) {
+      let child = del.childId ? byId.get(del.childId) : null;
+      if (!child || child.leaving) {
+        // The call may not name its child yet: take the newest busy child of that agent.
+        child = faces
+          .filter((f) => f.parent === face && !f.leaving && !used.has(f.id))
+          .filter((f) => !del.agent || f.agent === del.agent)
+          .filter((f) => f.data && (isBusy(f.data.state) || f.data.state === "new"))
+          .sort((a, b) => (b.data.createdAt || 0) - (a.data.createdAt || 0))[0];
+      }
+      if (!child || child.parent !== face) continue;
+      used.add(child.id);
+      handoffs.set(face.id + "=>" + child.id, {
+        parent: face, child, label: del.description || child.task || del.agent || "task",
+      });
+    }
+  }
+  return handoffs;
+}
+
+function throwToken(from, to, label, kind, result, onArrive) {
+  const token = new Token(from, to, label, kind, result);
+  tokens.push(token);
+  token.done.then(onArrive);
+}
+
+function sync(data) {
+  const picked = pickSessions(data);
+  const wanted = new Set(picked.map((p) => p.s.id));
+
+  for (const face of faces.slice()) {
+    if (!wanted.has(face.id)) face.leave();
+  }
+
+  for (const p of picked) {
+    let face = byId.get(p.s.id);
+    const parent = p.parentId ? byId.get(p.parentId) : null;
+    if (face && (face.leaving || face.parent !== parent)) { face.remove(); face = null; }
+    if (!face) {
+      const from = parent || { x: W / 2, y: H / 2 };
+      face = new Face({
+        id: p.s.id, agent: p.s.agent || p.s.name || "agent",
+        r: parent ? 42 : 66, parent, x: from.x, y: from.y,
+      });
+      faces.push(face);
+    }
+    face.data = p.s;
+    face.dirLabel = p.dirLabel;
+    face.task = p.s.task || "";
+  }
+
+  const current = resolveLiveHandoffs();
+  const delegating = new Set(Array.from(current.values()).map((h) => h.parent.id));
+
+  for (const face of faces) {
+    if (face.leaving || !face.data) continue;
+    const s = face.data;
+
+    // A subagent that just stopped working shows "done" for a few seconds.
+    if (face.parent && isBusy(face.lastState) && !isBusy(s.state) && s.state !== "failed" && s.state !== "interrupted") {
+      face.doneUntil = realNow + 4000;
+    }
+    face.lastState = s.state;
+
+    let status = "idle";
+    if (s.state === "failed") status = "failed";
+    else if (s.state === "interrupted") status = "interrupted";
+    else if (s.state === "waiting") status = "waiting";
+    else if (s.state === "running") status = delegating.has(face.id) ? "delegating" : "running";
+    else if (realNow < face.doneUntil) status = "done";
+
+    face.activity = s.state === "waiting"
+      ? "needs approval" + (s.stateDetail ? ": " + s.stateDetail : "")
+      : (s.activity || s.stateDetail || "working");
+    if (status !== face.status) face.setStatus(status);
+  }
+
+  // Animate what changed since the previous snapshot. On page load, just show it.
+  if (liveHandoffs) {
+    for (const [key, h] of current) {
+      if (liveHandoffs.has(key)) continue;
+      log(h.parent.agent + " " + ARROW + " " + h.child.agent + ": " + h.label);
+      h.child.scale = Math.min(h.child.scale, .2);
+      throwToken(h.parent, h.child, h.label, "out", null, () => h.child.react("surprised", 700));
+    }
+    for (const [key, h] of liveHandoffs) {
+      if (current.has(key) || h.child.leaving || h.parent.leaving) continue;
+      const state = h.child.data ? h.child.data.state : "idle";
+      const result = state === "failed" || state === "interrupted" ? "failed" : "done";
+      log(h.child.agent + (result === "failed" ? " failed: " : " finished: ") + h.label);
+      throwToken(h.child, h.parent, h.label, "back", result,
+        () => h.parent.react(result === "failed" ? "worried" : "joy", 1700));
+    }
+  }
+  liveHandoffs = current;
+
+  layout();
+
+  const totals = data.totals || {};
+  document.getElementById("modeText").textContent =
+    (data.monitor && data.monitor.stale ? "Live, but OpenCode is unreachable · " : "Live · ") +
+    (totals.running || 0) + " running · " + (totals.sessions || 0) + " sessions. Idle faces follow your mouse.";
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/sessions.json?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    sync(await res.json());
+  } catch (err) {
+    document.getElementById("modeText").textContent = "Monitor offline — showing the last state.";
+  }
+  setTimeout(poll, 1000);
+}
+
+/* --------------------------------------------------------------- loop --- */
+
+function frame(now) {
+  const dt = Math.min(.05, (now - realNow) / 1000);
+  realNow = now;
+  if (!paused) simNow += dt * 1000;
+
+  for (let i = waiters.length - 1; i >= 0; i--) {
+    if (simNow >= waiters[i].until) { const w = waiters.splice(i, 1)[0]; w.resolve(); }
+  }
+  for (const t of tokens.slice()) t.update();
+  for (const f of faces) f.update(dt);
+  for (const f of faces) f.render();
+
+  requestAnimationFrame(frame);
+}
+
+svg.addEventListener("pointermove", (e) => { mouse = { x: e.clientX, y: e.clientY }; });
+svg.addEventListener("pointerleave", () => { mouse = null; });
+
+addEventListener("resize", () => { W = innerWidth; H = innerHeight; layout(); });
+
+document.getElementById("btnHand").addEventListener("click", () => { manualHandoff(); });
+document.getElementById("btnPause").addEventListener("click", (e) => {
+  paused = !paused;
+  e.target.textContent = paused ? "Resume script" : "Pause script";
+});
+document.getElementById("btnReset").addEventListener("click", () => { location.reload(); });
+
+async function start() {
+  requestAnimationFrame(frame);
+  if (/[?&]gallery\b/.test(location.search)) return startGallery();
+  if (/[?&]demo\b/.test(location.search)) return startDemo("?demo");
+  if (location.protocol === "file:") return startDemo("opened from disk; open it through the monitor for live data");
+
+  try {
+    const res = await fetch("/sessions.json?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    sync(await res.json());
+    setTimeout(poll, 1000);
+  } catch (err) {
+    startDemo("no sessions.json found");
+  }
+}
+
+start();
+</script>
+</body>
+</html>
