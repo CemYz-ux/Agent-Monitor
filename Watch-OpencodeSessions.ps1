@@ -1122,7 +1122,7 @@ try {
 
             if (-not $Once) {
                 # Slow lane, after the snapshot has been published. The next tick
-                # picks up the new slugs / daily totals.
+                # picks up the new daily totals.
                 $slowNow = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
                 if (($slowNow - $script:LastStats) -ge $TokenIntervalMs) {

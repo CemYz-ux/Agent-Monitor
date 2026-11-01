@@ -39,17 +39,17 @@ Verified against the local service (OpenCode 2.1.3):
 | Current tool / running detail | `GET /api/session/{id}/message?limit=1&order=desc&type=assistant` |
 | Waiting for approval | `GET /api/permission/request` |
 | Today's token totals | `GET /api/experimental/session/stats?from=<midnight>&to=<now>&tools=none` |
-| Session slug + title | `session_v2` in `~/.local/share/opencode/opencode.db` |
+| First user prompt (session name) | `GET /api/session/{id}/message?limit=1&order=asc&type=user` |
 
 `Session.Info` fields used: `id`, `parentID`, `agent`, `model`, `cost`, `tokens`,
 `outcome`, `time.{created,updated,idle,archived}`, `location.directory`.
 
 Two quirks shaped the design:
 
-1. **Titles are usually null.** The database has a friendly `slug`
-   (`witty-squid`, `misty-forest`) but the HTTP API does not expose it. The
-   monitor reads `session_v2.slug` with Node's built-in `node:sqlite`, read-only,
-   every 10 seconds. WAL mode allows this alongside OpenCode's writes.
+1. **Titles are usually null, and the API has no slug.** OpenCode's friendly
+   slug (`witty-squid`) lives only in its database, which the monitor does not
+   read. Sessions are named from their first user prompt instead, fetched once
+   through the API and cached in `.monitor-state.json`.
 2. **`/api/session/active` only reports "running".** It says nothing about
    *what* is running. The tool name comes from the last assistant message's
    first tool part with `state.status = "running"`.
@@ -69,7 +69,8 @@ retry timeouts, and keeps the last snapshot on failure instead of crashing.
   Watch-OpencodeSessions.ps1
     1. resolve service.json (re-read after connection failures)
     2. every tick:  sessions + active + permissions + last active message
-       every 10 s:  session slugs + today's token totals
+                    + first prompt for new sessions
+       every 10 s:  today's token totals
     3. merge with .monitor-state.json (observed state, first prompt)
     4. build one snapshot object
     5. write sessions.json atomically
@@ -111,7 +112,6 @@ The page itself is never rewritten. Only `sessions.json` changes.
     "startedAt": 1792745259912,
     "stale": false,
     "error": null,
-    "slugs": true,                          // node:sqlite helper worked
     "slowUpdatedAt": 1792757398100          // last 10s refresh
   },
   "server": {
@@ -160,9 +160,9 @@ The page itself is never rewritten. Only `sessions.json` changes.
           "shortId": "e97cf530",
           "parentId": null,
           "depth": 0,
-          "name": "witty-squid",
-          "slug": "witty-squid",
-          "title": "",
+          "name": "Build a powershell script...", // first prompt, truncated (see §6)
+          "slug": "",                           // reserved, currently always empty
+          "title": "",                          // reserved, currently always empty
           "prompt": "Build a powershell script that opens 6 terminals…",
           "task": "",                           // description this session was handed by its parent (kept after the handoff)
           "activity": "CONCEPT.md (lines 246-253)",  // running tool's input, short (≤80 chars)
@@ -248,15 +248,17 @@ is pruned to sessions seen in the last 24 hours.
 
 First match wins:
 
-1. `title` — if the user renamed it.
-2. `slug` — the OpenCode-generated name (`witty-squid`). This is what the
-   dashboard normally shows.
-3. First user message, truncated.
-4. `Session e97cf530`.
+1. First user message, whitespace collapsed and cut to 28 characters
+   (`Build a powershell script...`).
+2. `Session e97cf530` — the short id, if no prompt could be fetched.
 
-The slug is not derived from the conversation; it is a stable, human-friendly
-handle assigned by OpenCode. It stays in the tooltip and the detail panel, along
-with the first prompt, while the bubble itself shows the agent (§7).
+The prompt is fetched with `GET /api/session/{id}/message?limit=1&order=asc&type=user`
+when a session is first seen, and again when it starts running if it was still
+empty (at most 5 fetches per tick). Up to 160 characters are cached in
+`.monitor-state.json`, so each session is fetched once.
+
+The name and the full prompt appear in the tooltip and the detail panel, while
+the bubble itself shows the agent (§7).
 
 ---
 
@@ -301,7 +303,7 @@ Force-directed, three levels:
 - Colour encodes state; a soft animated halo marks `running`, a dashed halo
   marks `waiting`.
 - The bubble names the **agent** (`build`, `collector`, `digestion`, `critic`) —
-  not the session slug, never a truncated prompt. Several sessions can run the
+  not the session name, never a truncated prompt. Several sessions can run the
   same agent; the session's own name and first prompt are one hover or click
   away, so the bubble stays scannable.
 - Subagent bubbles omit the token line to stay readable.
@@ -339,7 +341,7 @@ Force-directed, three levels:
   pan/zoom is preserved. Double-click the background to re-fit.
 - `#select=<session-id>` opens the detail panel directly (useful for links).
 - Reduced-motion media query disables the pulse, link animation, and live dot.
-- One dark theme, no dependencies beyond the vendored D3.
+- One dark theme, no dependencies beyond D3 (loaded from jsDelivr).
 
 ---
 
@@ -352,13 +354,14 @@ tick (every 1000 ms):
   perms    = GET /api/permission/request
   for each active session:
       last = GET /api/session/{id}/message?limit=1&order=desc&type=assistant
+  for each session without a cached prompt (max 5 per tick):
+      first = GET /api/session/{id}/message?limit=1&order=asc&type=user
   merge + derive + save state
   write sessions.json atomically
   serve HTTP requests until the next tick
 
 slow lane (every 10000 ms):
   stats = GET /api/experimental/session/stats?from=<local midnight>&to=<now>
-  slugs = node opencode-meta.mjs <opencode.db>
 ```
 
 - One `System.Net.Http.HttpClient` for the whole run, 4-second timeout.
@@ -379,7 +382,7 @@ against localhost, plus one stats request every 10 seconds.
 | Parameter | Default | Purpose |
 |---|---|---|
 | `-IntervalMs` | `1000` | snapshot / graph cadence |
-| `-TokenIntervalMs` | `10000` | slug + daily token refresh |
+| `-TokenIntervalMs` | `10000` | daily token total refresh |
 | `-Limit` | `200` | max sessions to read |
 | `-Port` | `8787` | first loopback port to try |
 | `-NoBrowser` | off | do not open the page |
@@ -401,14 +404,15 @@ If the execution policy blocks the script, run it through `powershell.exe -NoPro
 | Clock skew | all elapsed values come from the monitor's clock |
 | Very long names | ellipsis in the bubble, full text in the detail panel |
 | 100+ sessions | `-Limit` + collision layout; consider collapsing idle sessions later |
-| Node / SQLite unavailable | slugs and cached titles disappear; names fall back to prompt / short id |
+| First prompt not fetchable | name falls back to `Session <short id>`; retried when the session starts running |
 
 ---
 
 ## 10. Decisions taken
 
 1. **Scope** — all current (non-archived) sessions, up to `-Limit`.
-2. **Name** — slug from `session_v2`, with title above it and prompt/id below it.
+2. **Name** — first user prompt via the API, falling back to the short id. No
+   database access, so the monitor only needs the HTTP API.
 3. **Refresh** — a loopback HTTP server inside the PowerShell process, so the
    page can `fetch()` every second and the server dies with the process.
 4. **Bubble size** — token usage: sessions 27–56 px, subagents 19–34 px.
@@ -416,5 +420,4 @@ If the execution policy blocks the script, run it through `powershell.exe -NoPro
 5. **Daily total** — bottom-right panel, from the stats endpoint, refreshed every
    10 seconds. Input + output + reasoning is the headline; cache reads are shown
    separately because they are an order of magnitude larger.
-6. **Dependencies** — PowerShell 5.1, D3 v7.9 from the jsDelivr CDN, and Node (already
-   required by OpenCode) for the SQLite read.
+6. **Dependencies** — PowerShell 5.1 and D3 v7.9 from the jsDelivr CDN.
