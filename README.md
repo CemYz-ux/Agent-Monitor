@@ -13,7 +13,15 @@ is running, subagents, and token usage.
 
 ## Usage
 
-Start the monitor:
+Start the monitor by double-clicking `Start-Monitor.cmd`, or from a terminal:
+
+```powershell
+.\Start-Monitor.cmd
+```
+
+The launcher runs the script with `-ExecutionPolicy Bypass` for that one process, so it
+works even when the machine policy is `AllSigned` or `Restricted`. Parameters are passed
+through (`.\Start-Monitor.cmd -NoBrowser`). The equivalent direct call is:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Watch-OpencodeSessions.ps1
@@ -33,6 +41,7 @@ is busy). Stop it with Ctrl+C.
 
 ## Files
 
+- `Start-Monitor.cmd`: double-clickable launcher
 - `Watch-OpencodeSessions.ps1`: collector and local HTTP server
 - `index.html`: the dashboard
 - `sessions.json`, `.monitor-state.json`: generated at runtime (git-ignored)
