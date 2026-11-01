@@ -5,352 +5,349 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenCode · agent monitor</title>
 <style>
+  /* Palette follows OpenCode's default dark theme. */
   :root {
-    --bg:         #080b12;
-    --panel:      rgba(11, 14, 23, .94);
-    --border:     rgba(90, 120, 200, .14);
-    --border-hi:  rgba(122, 162, 247, .30);
-    --text:       #c8d3f5;
-    --muted:      #7b86b8;
-    --dim:        #4a5278;
-    --accent:     #7aa2f7;
-    --running:    #9ece6a;
-    --waiting:    #e0af68;
-    --idle:       #5e6a98;
-    --failed:     #f7768e;
-    --interrupted:#bb9af7;
-    --new:        #7dcfff;
-    --dir:        #7aa2f7;
-    --task:       #73daca;
+    --bg:          #0a0a0a;
+    --panel:       #141414;
+    --element:     #1e1e1e;
+    --border:      #2e2e2e;
+    --border-hi:   #484848;
+    --border-act:  #606060;
+    --text:        #eeeeee;
+    --muted:       #808080;
+    --dim:         #5a5a5a;
+    --accent:      #fab283;   /* OpenCode primary (peach) */
+    --secondary:   #5c9cf5;
+    --running:     #fab283;
+    --waiting:     #e5c07b;
+    --idle:        #808080;
+    --done:        #7fd88f;
+    --failed:      #e06c75;
+    --interrupted: #9d7cd8;
+    --new:         #5c9cf5;
+    --dir:         #808080;
+    --task:        #56b6c2;
+    --mono: "JetBrains Mono", "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   }
 
   * { box-sizing: border-box; }
 
   html, body {
     margin: 0; height: 100%; overflow: hidden;
-    background:
-      radial-gradient(ellipse 1100px 650px at 14% 4%, rgba(122,162,247,.07), transparent 62%),
-      radial-gradient(ellipse 900px 900px at 90% 94%, rgba(158,206,106,.05), transparent 58%),
-      var(--bg);
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, #1a1a1a 1px, transparent 1.2px);
+    background-size: 24px 24px;
     color: var(--text);
-    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-    font-size: 13px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
     -webkit-font-smoothing: antialiased;
   }
+  button { font-family: inherit; }
+  ::selection { background: var(--accent); color: var(--bg); }
 
   #stage {
     position: fixed; inset: 0; width: 100%; height: 100%;
     cursor: grab; user-select: none; touch-action: none;
+    font-family: var(--mono);
   }
   #stage:active { cursor: grabbing; }
 
-  /* ── topbar ────────────────────────────────────────────────────── */
+  /* ── boxes: square, bordered, title sitting in the top border ──── */
+  .box {
+    position: fixed; z-index: 15;
+    border: 1px solid var(--border-hi);
+    background: var(--panel);
+  }
+  .box > .box-title {
+    position: absolute; top: -9px; left: 10px;
+    padding: 0 6px; line-height: 16px;
+    background: var(--panel); color: var(--muted);
+    font-size: 11px;
+  }
+  .box > .box-title b { color: var(--text); font-weight: 600; }
+
+  /* ── header ────────────────────────────────────────────────────── */
   #topbar {
-    position: fixed; z-index: 20; top: 0; left: 0; right: 0; height: 52px;
+    position: fixed; z-index: 20; top: 0; left: 0; right: 0; height: 36px;
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
-    padding: 0 20px;
-    background: rgba(8, 11, 18, .90);
+    padding: 0 14px;
+    background: var(--bg);
     border-bottom: 1px solid var(--border);
-    backdrop-filter: blur(24px);
     pointer-events: none;
   }
-  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .live-dot {
-    width: 8px; height: 8px; border-radius: 50%; flex: none;
-    background: var(--dim);
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; white-space: nowrap; }
+  .wordmark { font-size: 13px; letter-spacing: -.01em; }
+  .wordmark .w-open { color: var(--muted); }
+  .wordmark .w-code { color: var(--text); font-weight: 700; }
+  .brand .crumb { color: var(--dim); }
+  .brand .page  { color: var(--text); }
+  .live {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--muted);
   }
-  .live-dot.live {
-    background: var(--running);
-    box-shadow: 0 0 0 0 rgba(158,206,106,.5);
-    animation: livedot 2.2s ease-out infinite;
-  }
+  .live-dot { width: 7px; height: 7px; flex: none; background: var(--dim); }
+  .live-dot.live    { background: var(--done); animation: blink 1.2s steps(2, start) infinite; }
   .live-dot.stale   { background: var(--waiting); }
   .live-dot.offline { background: var(--failed); }
-  @keyframes livedot {
-    0%   { box-shadow: 0 0 0 0   rgba(158,206,106,.5); }
-    70%  { box-shadow: 0 0 0 7px rgba(158,206,106,0); }
-    100% { box-shadow: 0 0 0 0   rgba(158,206,106,0); }
-  }
-  .brand .title { font-weight: 600; font-size: 13.5px; letter-spacing: .01em; }
-  .brand .sub   { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @keyframes blink { to { opacity: .25; } }
+  .brand .sub { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
 
-  .chips { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
-  .chip {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 3px 10px; border-radius: 999px;
-    border: 1px solid var(--border);
-    background: rgba(122,162,247,.04);
+  .chips { display: flex; gap: 16px; white-space: nowrap; }
+  .chip { color: var(--muted); }
+  .chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chip.running b { color: var(--running); }
+  .chip.waiting b { color: var(--waiting); }
+  .chip.zero b    { color: var(--dim); }
+
+  /* ── status bar ────────────────────────────────────────────────── */
+  #statusbar {
+    position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; height: 26px;
+    display: flex; align-items: stretch; justify-content: space-between;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
     color: var(--muted); font-size: 11px; white-space: nowrap;
   }
-  .chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .chip.running { border-color: rgba(158,206,106,.22); background: rgba(158,206,106,.05); }
-  .chip.running b { color: var(--running); }
-  .chip.waiting { border-color: rgba(224,175,104,.22); background: rgba(224,175,104,.05); }
-  .chip.waiting b { color: var(--waiting); }
+  .sb-left, .sb-right { display: flex; align-items: center; min-width: 0; }
+  .sb-mode {
+    display: flex; align-items: center; padding: 0 10px; height: 100%;
+    background: var(--accent); color: var(--bg); font-weight: 700; letter-spacing: .04em;
+  }
+  .sb-mode.stale   { background: var(--waiting); }
+  .sb-mode.offline { background: var(--failed); }
+  .keys { display: flex; gap: 14px; padding: 0 12px; overflow: hidden; }
+  .keys kbd { font: inherit; color: var(--text); }
+  .sb-right { gap: 14px; padding: 0 12px; }
+  .sb-right .lbl { color: var(--dim); }
+  .sb-right b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .sb-right .cost { color: var(--done); }
 
   /* ── legend ────────────────────────────────────────────────────── */
   #legend {
-    position: fixed; z-index: 15; left: 18px; bottom: 18px;
-    display: flex; flex-direction: column; gap: 7px;
-    padding: 10px 14px;
-    border: 1px solid var(--border); border-radius: 12px;
-    background: var(--panel); backdrop-filter: blur(16px);
-    color: var(--dim); font-size: 11px;
+    left: 14px; bottom: 42px;
+    display: grid; grid-template-columns: auto auto; gap: 3px 18px;
+    padding: 12px 14px 9px;
+    color: var(--muted); font-size: 11px;
   }
-  #legend span { display: inline-flex; align-items: center; gap: 5px; }
-  #legend i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
-  #legend .l-running { color: var(--running); }
-  #legend .l-waiting { color: var(--waiting); }
-  #legend .l-idle    { color: var(--idle); }
-  #legend .l-failed  { color: var(--failed); }
-  #legend .l-new     { color: var(--new); }
-  #legend .l-task    { color: var(--task); }
+  #legend span { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+  #legend i { width: 8px; height: 8px; background: currentColor; display: inline-block; }
+  #legend .l-running     { color: var(--running); }
+  #legend .l-waiting     { color: var(--waiting); }
+  #legend .l-done        { color: var(--done); }
+  #legend .l-failed      { color: var(--failed); }
+  #legend .l-interrupted { color: var(--interrupted); }
+  #legend .l-idle        { color: var(--idle); }
+  #legend .l-task        { color: var(--task); }
+  #legend span em { font-style: normal; color: var(--muted); }
 
-  /* ── working-now strip ─────────────────────────────────────────── */
+  /* ── working-now box ───────────────────────────────────────────── */
   #worknow {
-    position: fixed; z-index: 15; top: 64px; left: 18px;
-    display: flex; flex-direction: column; gap: 5px;
-    max-width: min(560px, calc(100vw - 36px));
-  }
-  #worknow .wn-head {
-    color: var(--dim); font-size: 10px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .12em;
+    top: 54px; left: 14px;
+    display: flex; flex-direction: column;
+    padding: 11px 0 5px;
+    max-width: min(600px, calc(100vw - 28px));
   }
   #worknow button {
-    display: flex; align-items: baseline; gap: 8px; min-width: 0;
-    padding: 5px 11px; border-radius: 9px;
-    border: 1px solid rgba(115,218,202,.22);
-    background: rgba(11,14,23,.88); backdrop-filter: blur(14px);
-    color: var(--text); font: inherit; font-size: 11.5px; text-align: left;
-    cursor: pointer; transition: border-color .15s, background .15s;
+    display: flex; align-items: baseline; gap: 10px; min-width: 0;
+    padding: 3px 12px;
+    border: 0; border-left: 2px solid transparent;
+    background: transparent;
+    color: var(--text); font-size: 11.5px; text-align: left;
+    cursor: pointer;
   }
-  #worknow button:hover { border-color: rgba(115,218,202,.5); background: rgba(115,218,202,.06); }
-  #worknow .wn-chain { white-space: nowrap; flex: none; }
-  #worknow .wn-chain .holder { color: var(--task); font-weight: 600; }
+  #worknow button:hover { background: var(--element); border-left-color: var(--task); }
+  #worknow .wn-chain { white-space: nowrap; flex: none; color: var(--muted); }
+  #worknow .wn-chain::before { content: "● "; color: var(--running); }
+  #worknow .wn-chain .holder { color: var(--text); font-weight: 600; }
   #worknow .wn-act {
-    color: var(--muted); min-width: 0;
+    color: var(--dim); min-width: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-family: "Cascadia Mono", Consolas, monospace; font-size: 10.5px;
   }
 
-  /* ── today panel ───────────────────────────────────────────────── */
-  #today {
-    position: fixed; z-index: 15; right: 18px; bottom: 18px;
-    min-width: 210px; padding: 14px 16px 13px;
-    border: 1px solid var(--border); border-radius: 16px;
-    background: var(--panel); backdrop-filter: blur(20px);
-    box-shadow: 0 16px 48px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.03);
-  }
-  .today-head {
-    display: flex; justify-content: space-between; gap: 12px;
-    color: var(--dim); font-size: 10px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .12em;
-  }
-  .today-value {
-    margin-top: 4px; font-size: 28px; font-weight: 700;
-    letter-spacing: -.03em; color: var(--text);
-    font-variant-numeric: tabular-nums; line-height: 1;
-  }
-  .today-value small { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 3px; }
-  .today-sub { margin-top: 6px; color: var(--muted); font-size: 11px; }
-  .today-sub.dim { margin-top: 3px; color: var(--dim); font-size: 10.5px; }
-
-  /* ── detail panel ──────────────────────────────────────────────── */
+  /* ── detail sidebar ────────────────────────────────────────────── */
   #detail {
     position: fixed; z-index: 30;
-    top: 64px; right: 16px; bottom: 130px;
-    width: 360px; padding: 0;
-    border: 1px solid var(--border); border-radius: 16px;
-    background: rgba(9, 12, 20, .97);
-    backdrop-filter: blur(24px);
-    box-shadow: 0 28px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.04);
+    top: 36px; right: 0; bottom: 26px;
+    width: 370px;
+    border-left: 1px solid var(--border);
+    background: var(--panel);
     overflow: hidden;
     display: flex; flex-direction: column;
-    transform: translateX(calc(100% + 28px)); opacity: 0;
-    transition: transform .22s cubic-bezier(.16,1,.3,1), opacity .22s ease;
+    transform: translateX(100%); visibility: hidden;
+    transition: transform .16s ease-out, visibility 0s linear .16s;
   }
-  #detail.open { transform: none; opacity: 1; }
+  #detail.open { transform: none; visibility: visible; transition: transform .16s ease-out; }
 
   #detailClose {
-    position: absolute; top: 12px; right: 12px; z-index: 2;
-    width: 26px; height: 26px;
-    border: 1px solid var(--border); border-radius: 6px;
-    background: transparent; color: var(--dim); font-size: 16px; line-height: 1;
-    cursor: pointer; transition: color .15s, border-color .15s, background .15s;
+    position: absolute; top: 10px; right: 12px; z-index: 2;
+    padding: 0 4px; border: 0;
+    background: transparent; color: var(--dim); font-size: 11px;
+    cursor: pointer;
   }
-  #detailClose:hover { color: var(--text); border-color: var(--border-hi); background: rgba(122,162,247,.08); }
+  #detailClose:hover { color: var(--text); }
 
-  #detailBody { overflow-y: auto; flex: 1; padding: 20px 20px 24px; }
-  #detailBody::-webkit-scrollbar { width: 4px; }
+  #detailBody { overflow-y: auto; flex: 1; padding: 14px 16px 22px; }
+  #detailBody::-webkit-scrollbar { width: 6px; }
   #detailBody::-webkit-scrollbar-track { background: transparent; }
-  #detailBody::-webkit-scrollbar-thumb { background: rgba(90,120,200,.2); border-radius: 2px; }
-  #detailBody::-webkit-scrollbar-thumb:hover { background: rgba(122,162,247,.35); }
+  #detailBody::-webkit-scrollbar-thumb { background: var(--border-hi); }
+  #detailBody::-webkit-scrollbar-thumb:hover { background: var(--border-act); }
 
-  .d-kicker { color: var(--dim); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .13em; }
-  #detail h2 { margin: 5px 0 0; font-size: 17px; line-height: 1.3; word-break: break-word; }
+  .d-kicker { color: var(--dim); font-size: 11px; }
+  .d-kicker::before { content: "# "; }
+  #detail h2 {
+    margin: 4px 0 0; padding-right: 40px;
+    font-size: 13px; font-weight: 700; line-height: 1.4; word-break: break-word;
+  }
   .d-subhead {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    margin-top: 8px; padding-bottom: 14px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 8px; padding-bottom: 12px;
     border-bottom: 1px solid var(--border);
   }
-  .d-since { font-size: 11px; color: var(--dim); }
+  .d-since { font-size: 11px; color: var(--muted); }
 
+  /* state badges: solid blocks like a vim mode indicator */
   .st {
     display: inline-flex; align-items: center;
-    padding: 2px 8px; border-radius: 999px;
-    font-size: 10px; font-weight: 600; letter-spacing: .07em;
-    text-transform: uppercase; border: 1px solid currentColor;
+    padding: 0 6px; line-height: 17px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--bg); background: var(--idle);
   }
-  .st.running     { color: var(--running);     background: rgba(158,206,106,.08); }
-  .st.waiting     { color: var(--waiting);     background: rgba(224,175,104,.08); }
-  .st.idle        { color: var(--idle);        background: rgba(94,106,152,.07); }
-  .st.failed      { color: var(--failed);      background: rgba(247,118,142,.08); }
-  .st.interrupted { color: var(--interrupted); background: rgba(187,154,247,.08); }
-  .st.new         { color: var(--new);         background: rgba(125,207,255,.06); }
+  .st.running     { background: var(--running); }
+  .st.waiting     { background: var(--waiting); }
+  .st.idle        { background: var(--element); color: var(--muted); }
+  .st.failed      { background: var(--failed); }
+  .st.interrupted { background: var(--interrupted); }
+  .st.new         { background: var(--new); }
 
-  #detail dl { display: grid; grid-template-columns: 74px 1fr; gap: 0; margin: 14px 0; }
-  #detail dt, #detail dd {
-    padding: 5px 0; margin: 0;
-    border-bottom: 1px solid rgba(90,120,200,.07);
-    font-size: 11.5px;
-  }
-  #detail dt { color: var(--dim); font-size: 10.5px; padding-right: 8px; }
-  #detail dd { word-break: break-all; }
+  #detail dl { display: grid; grid-template-columns: 76px 1fr; gap: 0; margin: 10px 0 4px; }
+  #detail dt, #detail dd { padding: 3px 0; margin: 0; font-size: 11.5px; }
+  #detail dt { color: var(--dim); padding-right: 8px; }
+  #detail dd { word-break: break-all; color: var(--text); }
 
-  .mono  { font-family: "Cascadia Mono", Consolas, monospace; font-size: 10.5px; }
-  .small { font-size: 10.5px; }
+  .mono  { font-family: var(--mono); }
+  .small { font-size: 11px; }
   .d-path { color: var(--muted); }
 
   .copy-btn {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 20px; height: 18px; margin-left: 5px;
-    border: 1px solid var(--border); border-radius: 5px;
+    width: 20px; height: 17px; margin-left: 6px;
+    border: 1px solid var(--border-hi);
     background: transparent; color: var(--dim);
     font-size: 11px; cursor: pointer; vertical-align: middle;
-    transition: color .15s, border-color .15s, background .15s;
   }
-  .copy-btn:hover { color: var(--accent); border-color: var(--border-hi); background: rgba(122,162,247,.06); }
-  .copy-btn.copied { color: var(--running); border-color: rgba(158,206,106,.4); }
+  .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .copy-btn.copied { color: var(--done); border-color: var(--done); }
 
   .d-section {
-    margin-top: 18px; padding-bottom: 5px;
-    border-bottom: 1px solid var(--border);
-    font-size: 10px; font-weight: 600; letter-spacing: .12em;
-    text-transform: uppercase; color: var(--dim);
+    margin-top: 16px; margin-bottom: 2px;
+    font-size: 11.5px; font-weight: 700; color: var(--text);
   }
-  .tokgrid {
-    display: grid; grid-template-columns: repeat(3,1fr);
-    gap: 6px; margin-top: 10px;
-  }
+  .d-section::before { content: "▍"; color: var(--accent); margin-right: 4px; }
+
+  .tokgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; margin-top: 6px; }
   .tokgrid > div {
-    padding: 8px 9px; border-radius: 9px;
-    border: 1px solid var(--border);
-    background: rgba(122,162,247,.03);
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+    padding: 2px 0; border-bottom: 1px dashed var(--border);
   }
-  .tokgrid b {
-    display: block; font-size: 13px; font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .tokgrid span { color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .09em; }
+  .tokgrid b { order: 2; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tokgrid span { order: 1; color: var(--dim); font-size: 11px; }
 
   .d-prompt {
-    margin-top: 8px; padding: 10px 12px;
-    border-left: 2px solid rgba(122,162,247,.3);
-    border-radius: 0 9px 9px 0;
-    background: rgba(122,162,247,.04);
+    margin-top: 6px; padding: 8px 10px;
+    border-left: 2px solid var(--accent);
+    background: var(--element);
     color: var(--muted); font-size: 11.5px; line-height: 1.5;
-    white-space: pre-wrap;
+    white-space: pre-wrap; word-break: break-word;
   }
+  .d-prompt.mono { border-left-color: var(--running); color: var(--text); }
   .kid {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    width: 100%; margin-top: 5px; padding: 7px 10px;
-    border: 1px solid var(--border); border-radius: 9px;
+    width: 100%; margin-top: 1px; padding: 4px 8px;
+    border: 0; border-left: 2px solid transparent;
     background: transparent; color: var(--text);
-    font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
-    transition: border-color .15s, background .15s;
+    font-size: 11.5px; text-align: left; cursor: pointer;
   }
-  .kid:hover { border-color: var(--border-hi); background: rgba(122,162,247,.05); }
+  .kid > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kid > span:first-child::before { content: "› "; color: var(--dim); }
+  .kid:hover { background: var(--element); border-left-color: var(--accent); }
+  .kid:hover > span:first-child::before { color: var(--accent); }
 
   /* ── stale banner ──────────────────────────────────────────────── */
   #stale {
-    position: fixed; z-index: 25; top: 60px; left: 50%;
+    position: fixed; z-index: 25; top: 48px; left: 50%;
     transform: translateX(-50%);
-    padding: 6px 16px; border-radius: 999px;
-    border: 1px solid rgba(224,175,104,.4);
-    background: rgba(40,30,14,.95);
+    padding: 3px 12px;
+    border: 1px solid var(--waiting);
+    background: var(--panel);
     color: var(--waiting); font-size: 11.5px; white-space: nowrap;
   }
+  #stale::before { content: "! "; font-weight: 700; }
   .hidden { display: none !important; }
 
   /* ── svg nodes ─────────────────────────────────────────────────── */
   .node { cursor: grab; color: var(--idle); }
   .node:active { cursor: grabbing; }
-  .node .bubble { fill: rgba(94,106,152,.09); stroke: currentColor; stroke-width: 1.3; }
+  .node .bubble { fill: rgba(128,128,128,.06); stroke: currentColor; stroke-width: 1; }
 
   .node .halo   { fill: none; stroke: currentColor; opacity: 0; }
 
-  /* sessions and subagents are drawn as faces; labels sit under the face */
-  .node.has-face .bubble, .node.has-face .halo { display: none; }
-  .node.has-face text {
+  .node text {
+    font-family: var(--mono);
     paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
   }
-  .node.has-face .name { fill: #e6ebff; }
-  .node.has-face .meta { fill: #9aa3d0; }
-  .node.has-face .tok  { fill: #6a74a6; }
-  .node .face-ball { stroke-width: 2.5; }
-  .node.selected .face-ball { stroke-width: 4; filter: drop-shadow(0 0 8px rgba(122,162,247,.75)); }
-  .node .face-sign { font-weight: 800; font-family: "Segoe UI", system-ui, sans-serif; stroke: none; }
+
+  /* sessions and subagents are drawn as faces; labels sit under the face */
+  .node.has-face .bubble, .node.has-face .halo { display: none; }
+  .node.has-face .name { fill: var(--text); }
+  .node.has-face .meta { fill: var(--muted); }
+  .node.has-face .tok  { fill: var(--dim); }
+  .node .face-ball { stroke-width: 2; }
+  .node.selected .face-ball { stroke: var(--text) !important; stroke-width: 3; }
+  .node .face-sign { font-weight: 800; font-family: var(--mono); stroke: none; }
 
   .node.state-running     { color: var(--running); }
-  .node.state-running .bubble  { fill: rgba(158,206,106,.11); }
   .node.state-waiting     { color: var(--waiting); }
-  .node.state-waiting .bubble  { fill: rgba(224,175,104,.11); }
   .node.state-idle        { color: var(--idle); }
-  .node.state-idle .bubble     { fill: rgba(94,106,152,.07); }
   .node.state-failed      { color: var(--failed); }
-  .node.state-failed .bubble   { fill: rgba(247,118,142,.11); }
   .node.state-interrupted { color: var(--interrupted); }
-  .node.state-interrupted .bubble { fill: rgba(187,154,247,.10); }
   .node.state-new         { color: var(--new); }
-  .node.state-new .bubble { fill: rgba(125,207,255,.05); stroke-dasharray: 3 5; }
+  .node.state-new .bubble { stroke-dasharray: 3 5; }
 
   .node.state-running .halo { animation: halo 2.4s ease-out infinite; }
   @keyframes halo {
-    0%   { opacity: .55; stroke-width: 2; }
-    70%  { opacity: 0;   stroke-width: 12; }
-    100% { opacity: 0;   stroke-width: 12; }
+    0%   { opacity: .5; stroke-width: 2; }
+    70%  { opacity: 0;  stroke-width: 12; }
+    100% { opacity: 0;  stroke-width: 12; }
   }
   .node.state-waiting .halo { opacity: .5; stroke-dasharray: 3 6; }
 
   .node.kind-directory { color: var(--dir); }
   .node.kind-directory .bubble {
-    fill: rgba(122,162,247,.04);
-    stroke: rgba(122,162,247,.28);
-    stroke-dasharray: 2 8;
+    fill: rgba(20,20,20,.55);
+    stroke: var(--border-hi);
+    stroke-dasharray: 4 4;
   }
+  .node.kind-directory:hover .bubble { stroke: var(--border-act); }
+  .node.kind-directory.selected .bubble { stroke: var(--accent); stroke-width: 1.5; }
 
-  .node .name { fill: #d4dcff; font-weight: 600; }
-  .node .meta { fill: #8891c4; }
-  .node .tok  { fill: #5a6494; }
-  .node.kind-directory .name { fill: #c8d3ff; }
-  .node.kind-directory .meta { fill: #6870a4; }
+  .node .name { fill: var(--text); font-weight: 600; }
+  .node .meta { fill: var(--muted); }
+  .node .tok  { fill: var(--dim); }
+  .node.kind-directory .name { fill: var(--text); font-weight: 700; }
+  .node.kind-directory .meta { fill: var(--dim); }
 
-  .node.selected .bubble { stroke-width: 2.5; filter: drop-shadow(0 0 10px currentColor); }
+  .link { stroke: #2a2a2a; stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .link.live { stroke: rgba(250,178,131,.55); stroke-dasharray: 4 4; animation: dash 1s linear infinite; }
+  .link.handoff { stroke: var(--task); stroke-width: 1.5; stroke-dasharray: 6 4; animation: dash .8s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -16; } }
 
-  .link { stroke: rgba(100,130,210,.11); stroke-width: 1; vector-effect: non-scaling-stroke; }
-  .link.live { stroke: rgba(158,206,106,.5); stroke-dasharray: 5 5; animation: dash 1s linear infinite; }
-  .link.handoff { stroke: rgba(115,218,202,.7); stroke-width: 1.6; stroke-dasharray: 6 4; animation: dash .8s linear infinite; }
-  @keyframes dash { to { stroke-dashoffset: -20; } }
-
-  /* what the agent is doing right now, under the bubble */
-  .node .act {
-    fill: #9aa6d8; font-family: "Cascadia Mono", Consolas, monospace;
-    paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
-  }
+  /* what the agent is doing right now, under the face */
+  .node .act { fill: var(--muted); }
   .node.holder .act { fill: var(--task); }
 
   /* the agent currently holding a task */
-  .node .ring { fill: none; stroke: var(--task); stroke-width: 2; stroke-dasharray: 10 6; opacity: 0; }
+  .node .ring { fill: none; stroke: var(--task); stroke-width: 1.5; stroke-dasharray: 8 6; opacity: 0; }
   .node.holder .ring { opacity: .9; animation: spin 6s linear infinite; transform-box: fill-box; transform-origin: center; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -358,31 +355,37 @@
   .node.delegating .bubble { fill-opacity: .45; stroke-dasharray: 4 3; }
   .node.delegating .halo { animation: none; opacity: 0; }
 
-  /* task tokens travelling between bubbles */
+  /* task tokens travelling between faces */
   .token { pointer-events: none; }
-  .token .glow { fill: var(--task); opacity: .22; animation: tokpulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-  .token .core { fill: var(--task); stroke: #0b1a18; stroke-width: 1.2; }
+  .token .glow { fill: var(--task); opacity: .2; animation: tokpulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  .token .core { fill: var(--task); stroke: var(--bg); stroke-width: 1.5; }
   .token text {
-    fill: #d8fff7; font-size: 10.5px; font-weight: 600;
+    fill: var(--task); font-family: var(--mono); font-size: 10.5px; font-weight: 600;
     paint-order: stroke; stroke: var(--bg); stroke-width: 3.5px; stroke-linejoin: round;
   }
   .token.result-failed .glow, .token.result-failed .core { fill: var(--failed); }
-  .token.result-failed text { fill: #ffd6de; }
+  .token.result-failed text { fill: var(--failed); }
   .token.result-interrupted .glow, .token.result-interrupted .core { fill: var(--interrupted); }
-  .token.result-done .glow, .token.result-done .core { fill: var(--running); }
-  .token.result-done text { fill: #e6ffd0; }
-  @keyframes tokpulse { 50% { transform: scale(1.35); opacity: .1; } }
+  .token.result-interrupted text { fill: var(--interrupted); }
+  .token.result-done .glow, .token.result-done .core { fill: var(--done); }
+  .token.result-done text { fill: var(--done); }
+  @keyframes tokpulse { 50% { transform: scale(1.35); opacity: .08; } }
 
   @media (prefers-reduced-motion: reduce) {
     .node.state-running .halo, .link.live, .link.handoff, .live-dot.live,
     .node.holder .ring, .token .glow { animation: none; }
     #detail { transition: none; }
   }
-  @media (max-width: 720px) {
+  @media (max-width: 900px) {
+    .keys { display: none; }
     .brand .sub { display: none; }
-    #legend { max-width: 58vw; }
-    #detail { width: calc(100% - 28px); top: 62px; bottom: 148px; }
-    .today-head span:last-child { display: none; }
+  }
+  @media (max-width: 720px) {
+    .chips .chip:not(.running):not(.waiting) { display: none; }
+    .brand .crumb, .brand .page { display: none; }
+    .sb-right .opt { display: none; }
+    #legend { grid-template-columns: auto; }
+    #detail { width: 100%; border-left: 0; }
   }
 </style>
 </head>
@@ -390,40 +393,54 @@
 
 <header id="topbar">
   <div class="brand">
-    <span class="live-dot" id="liveDot"></span>
-    <span class="title">agent monitor</span>
-    <span class="sub" id="serverInfo">connecting…</span>
+    <span class="wordmark"><span class="w-open">open</span><span class="w-code">code</span></span>
+    <span class="crumb">/</span><span class="page">agent-monitor</span>
+    <span class="live"><span class="live-dot" id="liveDot"></span><span id="liveText">connecting</span></span>
+    <span class="sub" id="serverInfo"></span>
   </div>
   <div class="chips" id="chips"></div>
 </header>
 
 <svg id="stage" aria-label="OpenCode session map"></svg>
 
-<div id="legend">
-  <span style="color:#ffd23f"><i></i>thinking · working</span>
-  <span style="color:#ffb35c"><i></i>needs approval</span>
-  <span style="color:#a3e070"><i></i>just finished</span>
-  <span style="color:#ff8fa1"><i></i>failed</span>
-  <span style="color:#c7a6ff"><i></i>interrupted</span>
-  <span style="color:#b4bce0"><i></i>idle</span>
-  <span class="l-task"><i></i>task · handoff</span>
+<div id="legend" class="box">
+  <span class="box-title">legend</span>
+  <span class="l-running"><i></i><em>working</em></span>
+  <span class="l-waiting"><i></i><em>needs approval</em></span>
+  <span class="l-done"><i></i><em>just finished</em></span>
+  <span class="l-failed"><i></i><em>failed</em></span>
+  <span class="l-interrupted"><i></i><em>interrupted</em></span>
+  <span class="l-idle"><i></i><em>idle</em></span>
+  <span class="l-task"><i></i><em>task handoff</em></span>
 </div>
 
-<div id="worknow" class="hidden"></div>
-
-<div id="today" title="Token usage since local midnight. Cache reads are listed separately.">
-  <div class="today-head"><span>today</span><span id="todayDate"></span></div>
-  <div class="today-value" id="todayValue">—</div>
-  <div class="today-sub" id="todaySub">no data yet</div>
-  <div class="today-sub dim" id="todayCache"></div>
-</div>
+<div id="worknow" class="box hidden"></div>
 
 <aside id="detail" aria-live="polite">
-  <button id="detailClose" aria-label="close">×</button>
+  <button id="detailClose" aria-label="close">[esc]</button>
   <div id="detailBody"></div>
 </aside>
 
-<div id="stale" class="hidden">OpenCode unreachable — showing last snapshot</div>
+<div id="stale" class="hidden">opencode unreachable · showing last snapshot</div>
+
+<footer id="statusbar">
+  <div class="sb-left">
+    <span class="sb-mode" id="sbMode">LIVE</span>
+    <span class="keys">
+      <span><kbd>drag</kbd> pan</span>
+      <span><kbd>scroll</kbd> zoom</span>
+      <span><kbd>dblclick</kbd> fit</span>
+      <span><kbd>click</kbd> inspect</span>
+      <span><kbd>esc</kbd> close</span>
+    </span>
+  </div>
+  <div class="sb-right" id="today" title="Token usage since local midnight. Cache reads are listed separately.">
+    <span><span class="lbl">today</span> <b id="todayValue">—</b></span>
+    <span class="opt" id="todaySub"></span>
+    <span class="opt" id="todayCache"></span>
+    <span class="cost" id="todayCost"></span>
+  </div>
+</footer>
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script>
@@ -628,7 +645,7 @@ function nodeGeometry(d) {
 function labelParts(d) {
   if (d.kind === "directory") {
     return [
-      truncate(d.label, 15),
+      truncate(d.label, 15) + "/",
       truncate(
         d.dirData.runningCount + " running · " +
         d.dirData.sessionCount + " session" + (d.dirData.sessionCount === 1 ? "" : "s"),
@@ -913,7 +930,7 @@ function updateWorkNow() {
     return;
   }
 
-  let html = '<div class="wn-head">working now</div>';
+  let html = '<span class="box-title"><b>working now</b> · ' + holders.length + "</span>";
   for (const node of holders) {
     const chain = [];
     for (let n = node; n; n = n.parent) chain.unshift(n);
@@ -945,43 +962,57 @@ document.getElementById("worknow").addEventListener("click", (event) => {
 // its work, or the mouse).
 
 const SVGNS = "http://www.w3.org/2000/svg";
-const FACE_INK = "#2a1c10";
+const FACE_INK = "#141414";
 
 // [fill, outline] per face status
 const FACE_PALETTE = {
-  idle:        ["#b4bce0", "#6d77a8"],
-  running:     ["#ffd23f", "#c98a0e"],
-  delegating:  ["#ffd23f", "#c98a0e"],
-  waiting:     ["#ffb35c", "#c9721c"],
-  done:        ["#a3e070", "#5c9c33"],
-  failed:      ["#ff8fa1", "#c9465f"],
-  interrupted: ["#c7a6ff", "#8a63d2"],
+  idle:        ["#8a8a8a", "#4a4a4a"],
+  running:     ["#fab283", "#b9784c"],
+  delegating:  ["#fab283", "#b9784c"],
+  waiting:     ["#e5c07b", "#a8873f"],
+  done:        ["#7fd88f", "#4a9a58"],
+  failed:      ["#e06c75", "#9e3f47"],
+  interrupted: ["#9d7cd8", "#6a4fa3"],
 };
 
-//   smile -1..1   open 0..1   mw mouth width   mx mouth shift   tilt crooked mouth
-//   lid eye openness   happy ^-eyes   line –-eyes   brows visible
-//   lift* raise a brow   tilt* >0 lowers the inner end, <0 raises it
-//   cheeks blush   tear / think / ask / zz extras
+// Each expression is a text emoticon: one glyph for the eyes, one for the mouth.
+//   eyes:  dot .   ring o   line -   caret ^   not ¬   wince > <
+//   mouth: line _   dot .   o o
+//   bigL / bigR turn a ring eye into a big O, comma adds the tail of a ; under each eye.
+//   mw mouth width, mx mouth shift, tilt crooked mouth, think / ask / zz extras.
+const EYE_GLYPHS = ["dot", "ring", "line", "caret", "not", "wince"];
+const MOUTH_GLYPHS = ["line", "dot", "o"];
+
 const FACE_NEUTRAL = {
-  smile: .3, open: 0, mw: 1, mx: 0, tilt: 0,
-  lid: 1, happy: 0, line: 0,
-  brows: 0, liftL: 0, liftR: 0, tiltL: 0, tiltR: 0,
-  cheeks: 0, tear: 0, think: 0, ask: 0, zz: 0,
+  bigL: 0, bigR: 0, comma: 0,
+  mw: .75, mx: 0, tilt: 0,
+  think: 0, ask: 0, zz: 0,
 };
+for (const g of EYE_GLYPHS) FACE_NEUTRAL["e_" + g] = 0;
+for (const g of MOUTH_GLYPHS) FACE_NEUTRAL["m_" + g] = 0;
 
 const FACE_EXPRESSIONS = {
-  idle:      { smile: .35 },
-  sleepy:    { smile: .12, mw: .65, lid: .12, zz: 1 },
-  thinking:  { smile: .02, mw: .5, mx: .2, tilt: .5, brows: 1, liftL: .9, tiltR: .55, think: 1 },
-  watching:  { smile: .75, open: .45, mw: .9, lid: 1.18, brows: 1, liftL: .8, liftR: .8, tiltL: -.3, tiltR: -.3 },
-  asking:    { smile: -.05, mw: .7, tilt: -.7, brows: 1, liftR: 1, tiltL: .45, ask: 1 },
-  happy:     { smile: 1, open: .4, happy: 1, cheeks: 1 },
-  sad:       { smile: -.85, mw: .85, lid: .85, brows: 1, tiltL: -1, tiltR: -1, tear: 1 },
-  annoyed:   { smile: 0, mw: .75, tilt: .25, line: 1, brows: 1, tiltL: .7, tiltR: .7, liftL: -.2, liftR: -.2 },
-  surprised: { smile: 0, open: .8, mw: .5, lid: 1.22, brows: 1, liftL: 1, liftR: 1 },
-  joy:       { smile: 1, open: .5, happy: 1, cheeks: 1 },
-  worried:   { smile: -.7, open: .1, lid: .9, brows: 1, tiltL: -1, tiltR: -1 },
+  idle:      { eyes: "dot",   mouth: "line" },                       // ._.
+  sleepy:    { eyes: "line",  mouth: "dot", zz: 1 },                 // -.-  z
+  thinking:  { eyes: "dot",   mouth: "line", mw: .6, think: 1 },     // ._.  ...
+  watching:  { eyes: "ring",  mouth: "line" },                       // o_o
+  asking:    { eyes: "ring",  mouth: "line", bigR: 1, tilt: -.4, ask: 1 },      // o_O  ?
+  happy:     { eyes: "caret", mouth: "line" },                       // ^_^
+  joy:       { eyes: "caret", mouth: "o" },                          // ^o^
+  sad:       { eyes: "dot",   mouth: "line", comma: 1 },             // ;_;
+  annoyed:   { eyes: "not",   mouth: "line" },                       // ¬_¬
+  surprised: { eyes: "ring",  mouth: "line", bigL: 1, bigR: 1 },     // O_O
+  worried:   { eyes: "wince", mouth: "line", mw: .6 },               // >_<
 };
+
+function expressionGoal(name) {
+  const x = FACE_EXPRESSIONS[name] || FACE_EXPRESSIONS.idle;
+  const goal = Object.assign({}, FACE_NEUTRAL);
+  for (const k in x) if (k !== "eyes" && k !== "mouth") goal[k] = x[k];
+  goal["e_" + x.eyes] = 1;
+  goal["m_" + x.mouth] = 1;
+  return goal;
+}
 
 const rigs = new Map();      // session id -> FaceRig
 let mouseClient = null;
@@ -1014,7 +1045,7 @@ class FaceRig {
     this.glance = null;
     this.focusIndex = 0;
     this.reaction = null;
-    this.e = Object.assign({}, FACE_NEUTRAL, FACE_EXPRESSIONS.idle);
+    this.e = expressionGoal("idle");
     this.build(g);
     this.paint("idle");
   }
@@ -1026,39 +1057,36 @@ class FaceRig {
     this.ball = svgEl("circle", { class: "face-ball", r }, this.root);
 
     this.features = svgEl("g", {}, this.root);
+    const ink = { fill: "none", stroke: FACE_INK, "stroke-width": f2(r * .07), "stroke-linecap": "round", "stroke-linejoin": "round", opacity: 0 };
+    const path = (d, parent) => svgEl("path", Object.assign({ d }, ink), parent);
+    const P = (x, y) => f2(x * r) + " " + f2(y * r);
+
     this.eyes = [-1, 1].map((side) => {
       const wrap = svgEl("g", {}, this.features);
-      const lid = svgEl("g", {}, wrap);
-      svgEl("circle", { r: r * .1, fill: FACE_INK }, lid);
-      const happy = svgEl("path", {
-        d: "M " + f2(-r * .11) + " " + f2(r * .03) + " Q 0 " + f2(-r * .13) + " " + f2(r * .11) + " " + f2(r * .03),
-        fill: "none", stroke: FACE_INK, "stroke-width": r * .07, "stroke-linecap": "round", opacity: 0,
-      }, wrap);
-      const line = svgEl("path", {
-        d: "M " + f2(-r * .11) + " 0 L " + f2(r * .11) + " 0",
-        fill: "none", stroke: FACE_INK, "stroke-width": r * .07, "stroke-linecap": "round", opacity: 0,
-      }, wrap);
-      return { side, wrap, lid, happy, line };
+      const lid = svgEl("g", {}, wrap);   // squashed when blinking
+      const glyph = {
+        dot:   svgEl("circle", { r: f2(r * .1), fill: FACE_INK, opacity: 0 }, lid),
+        ring:  svgEl("circle", Object.assign({}, ink, { "stroke-width": f2(r * .06) }), lid),
+        line:  path("M " + P(-.12, 0) + " L " + P(.12, 0), wrap),
+        caret: path("M " + P(-.12, .06) + " L " + P(0, -.08) + " L " + P(.12, .06), wrap),
+        not:   path("M " + P(-.13, -.04) + " L " + P(.12, -.04) + " L " + P(.12, .08), wrap),
+        // > on the left, < on the right: both point at the nose
+        wince: path("M " + P(side * .09, -.09) + " L " + P(-side * .09, 0) + " L " + P(side * .09, .09), wrap),
+      };
+      // the lower half of a ; under the eye
+      const comma = path("M " + P(.03, .17) + " Q " + P(.04, .27) + " " + P(-.05, .32), wrap);
+      return { side, wrap, lid, glyph, comma };
     });
-    this.brows = [-1, 1].map(() => svgEl("path", {
-      fill: "none", stroke: FACE_INK, "stroke-width": r * .06, "stroke-linecap": "round", opacity: 0,
-    }, this.features));
-    this.cheeks = [-1, 1].map((side) => svgEl("ellipse", {
-      cx: side * r * .48, cy: r * .2, rx: r * .13, ry: r * .07, fill: "#ff6b8a", opacity: 0,
-    }, this.features));
-    this.mouth = svgEl("path", {
-      fill: FACE_INK, stroke: FACE_INK, "stroke-width": r * .07, "stroke-linejoin": "round", "stroke-linecap": "round",
-    }, this.features);
-    const k = r / 44;
-    this.tear = svgEl("path", {
-      d: "M 0 " + f2(-7 * k) + " C " + f2(5 * k) + " 0 " + f2(5 * k) + " " + f2(6 * k) + " 0 " + f2(6 * k) +
-         " C " + f2(-5 * k) + " " + f2(6 * k) + " " + f2(-5 * k) + " 0 0 " + f2(-7 * k) + " Z",
-      fill: "#5aa9ff", stroke: "#2f6fc0", "stroke-width": 1, opacity: 0,
-    }, this.features);
+
+    this.mouth = {
+      line: path("", this.features),
+      dot:  svgEl("circle", { r: f2(r * .065), fill: FACE_INK, opacity: 0 }, this.features),
+      o:    svgEl("ellipse", Object.assign({}, ink, { rx: f2(r * .1), ry: f2(r * .12), "stroke-width": f2(r * .06) }), this.features),
+    };
 
     this.thought = svgEl("g", { opacity: 0 }, this.root);
     const bx = r * 1.05, by = -r * 1.38;
-    const cloud = { fill: "#eef1ff", stroke: FACE_INK, "stroke-width": 1.5 };
+    const cloud = { fill: "#eeeeee", stroke: "#0a0a0a", "stroke-width": 1.5 };
     svgEl("circle", Object.assign({ cx: r * .62, cy: -r * .82, r: r * .07 }, cloud), this.thought);
     svgEl("circle", Object.assign({ cx: r * .78, cy: -r * 1.02, r: r * .11 }, cloud), this.thought);
     svgEl("ellipse", Object.assign({ cx: bx, cy: by, rx: r * .56, ry: r * .34 }, cloud), this.thought);
@@ -1066,12 +1094,12 @@ class FaceRig {
       svgEl("circle", { cx: bx + i * r * .2, cy: by, r: r * .065, fill: FACE_INK }, this.thought));
 
     this.ask = svgEl("text", {
-      class: "face-sign", x: r * .62, y: -r * .62, "font-size": r * .62, fill: "#ffb35c", opacity: 0,
+      class: "face-sign", x: r * .62, y: -r * .62, "font-size": r * .62, fill: "#e5c07b", opacity: 0,
     }, this.root);
     this.ask.textContent = "?";
 
     this.zz = [0, 1].map(() => {
-      const t = svgEl("text", { class: "face-sign", "font-size": r * .32, fill: "#c9d2ff", opacity: 0 }, this.root);
+      const t = svgEl("text", { class: "face-sign", "font-size": r * .32, fill: "#808080", opacity: 0 }, this.root);
       t.textContent = "z";
       return t;
     });
@@ -1193,11 +1221,11 @@ class FaceRig {
     this.gy = approach(this.gy, (dy / dist) * strength, 9, dt);
 
     const reaction = this.reaction && now < this.reaction.until ? this.reaction.kind : null;
-    const goal = Object.assign({}, FACE_NEUTRAL, FACE_EXPRESSIONS[reaction || this.expression()]);
+    const goal = expressionGoal(reaction || this.expression());
     if (this.status === "running" && !reaction) goal.mx += Math.sin(now / 700 + this.phase) * .05;
 
-    // Blink only with open eyes: asleep, ^ ^ and – – faces keep their eyes as they are.
-    const eyesOpen = goal.lid > .5 && goal.happy < .5 && goal.line < .5;
+    // Only . and o eyes blink; - ^ ¬ > < stay as they are.
+    const eyesOpen = goal.e_dot + goal.e_ring > .5;
     if (!eyesOpen) {
       this.blinkUntil = 0;
     } else if (now > this.nextBlink) {
@@ -1216,44 +1244,29 @@ class FaceRig {
 
     this.features.setAttribute("transform", "translate(" + f2(this.gx * r * .2) + "," + f2(this.gy * r * .16) + ")");
 
-    const lid = clamp(e.lid * this.lidBlink, .04, 1.25);
-    const openEyes = clamp((1 - e.happy) * (1 - e.line), 0, 1);
+    const lid = clamp(this.lidBlink, .04, 1);
     for (const eye of this.eyes) {
-      const ex = eye.side * r * .27 + this.gx * r * .035;
-      const ey = -r * .12 + this.gy * r * .03;
+      const ex = eye.side * r * .4 + this.gx * r * .035;
+      const ey = this.gy * r * .03;
       eye.wrap.setAttribute("transform", "translate(" + f2(ex) + "," + f2(ey) + ")");
       eye.lid.setAttribute("transform", "scale(1," + lid.toFixed(3) + ")");
-      eye.lid.setAttribute("opacity", f2(openEyes));
-      eye.happy.setAttribute("opacity", f2(e.happy));
-      eye.line.setAttribute("opacity", f2(e.line * (1 - e.happy)));
+      const big = eye.side < 0 ? e.bigL : e.bigR;
+      eye.glyph.ring.setAttribute("r", f2(r * (.1 + .07 * big)));
+      for (const g of EYE_GLYPHS) eye.glyph[g].setAttribute("opacity", f2(clamp(e["e_" + g], 0, 1)));
+      eye.comma.setAttribute("opacity", f2(clamp(e.comma, 0, 1)));
     }
 
-    this.brows.forEach((brow, i) => {
-      const side = i === 0 ? -1 : 1;
-      const lift = (side < 0 ? e.liftL : e.liftR) * r * .1;
-      const tilt = (side < 0 ? e.tiltL : e.tiltR) * r * .08;
-      const y = -r * .4 - lift;
-      brow.setAttribute("d", "M " + f2(side * r * .42) + " " + f2(y - tilt * .3) + " L " + f2(side * r * .14) + " " + f2(y + tilt));
-      brow.setAttribute("opacity", f2(clamp(e.brows, 0, 1)));
-    });
-
-    this.cheeks.forEach((c) => c.setAttribute("opacity", f2(clamp(e.cheeks * .5, 0, .5))));
-
     const cx = e.mx * r;
-    const w = r * (.3 + .06 * Math.max(0, e.smile)) * e.mw * (1 - e.open * .3);
-    const y0 = r * .3;
-    const corner = y0 - e.smile * r * .07;
+    const w = r * .3 * e.mw;
+    const y0 = r * .2;
     const tilt = e.tilt * r * .06;
-    const upper = y0 + e.smile * r * .16;
-    const lower = upper + e.open * r * .4 + Math.max(0, e.smile) * e.open * r * .1;
-    this.mouth.setAttribute("d",
-      "M " + f2(cx - w) + " " + f2(corner + tilt) +
-      " Q " + f2(cx) + " " + f2(upper) + " " + f2(cx + w) + " " + f2(corner - tilt) +
-      " Q " + f2(cx) + " " + f2(lower) + " " + f2(cx - w) + " " + f2(corner + tilt) + " Z");
-
-    const tp = (now / 1500 + this.phase) % 1;
-    this.tear.setAttribute("transform", "translate(" + f2(-r * .3) + "," + f2(r * .06 + tp * r * .42) + ")");
-    this.tear.setAttribute("opacity", f2(e.tear * (tp < .1 ? tp * 10 : 1 - (tp - .1) / .9)));
+    this.mouth.line.setAttribute("d",
+      "M " + f2(cx - w) + " " + f2(y0 + tilt) + " L " + f2(cx + w) + " " + f2(y0 - tilt));
+    this.mouth.dot.setAttribute("cx", f2(cx));
+    this.mouth.dot.setAttribute("cy", f2(y0));
+    this.mouth.o.setAttribute("cx", f2(cx));
+    this.mouth.o.setAttribute("cy", f2(y0));
+    for (const g of MOUTH_GLYPHS) this.mouth[g].setAttribute("opacity", f2(clamp(e["m_" + g], 0, 1)));
 
     this.thought.setAttribute("opacity", f2(clamp(e.think, 0, 1)));
     if (e.think > .02) {
@@ -1501,28 +1514,33 @@ function ticked() {
 
 /* -------------------------------------------------------------- chrome --- */
 
+function setLive(mode, text) {
+  document.getElementById("liveDot").className = "live-dot " + mode;
+  document.getElementById("liveText").textContent = text;
+  const badge = document.getElementById("sbMode");
+  badge.className = "sb-mode " + mode;
+  badge.textContent = mode === "live" ? "LIVE" : mode === "stale" ? "STALE" : "OFFLINE";
+}
+
 function updateChrome(data) {
-  const dot = document.getElementById("liveDot");
-  dot.className = "live-dot " + (data.monitor.stale ? "stale" : "live");
+  setLive(data.monitor.stale ? "stale" : "live", data.monitor.stale ? "stale" : "live");
 
   const server = data.server || {};
-  const info = document.getElementById("serverInfo");
   const bits = [];
   if (server.version) bits.push("v" + server.version);
   if (server.url) bits.push(server.url.replace(/^https?:\/\//, ""));
-  if (typeof server.latencyMs === "number" && server.healthy) bits.push(server.latencyMs + " ms");
-  info.textContent = bits.join(" · ") || "connected";
+  if (typeof server.latencyMs === "number" && server.healthy) bits.push(server.latencyMs + "ms");
+  document.getElementById("serverInfo").textContent = bits.join("  ");
 
   const totals = data.totals || {};
-  const dirs = totals.directories || 0;
-  const sessions = totals.sessions || 0;
-  const subagents = totals.subagents || 0;
+  const chip = (n, one, many, cls) =>
+    '<span class="chip' + (cls ? " " + cls : "") + (n ? "" : " zero") + '"><b>' + n + "</b> " + (n === 1 ? one : many) + "</span>";
   document.getElementById("chips").innerHTML =
-    '<span class="chip"><b>' + dirs + "</b> " + (dirs === 1 ? "dir" : "dirs") + "</span>" +
-    '<span class="chip"><b>' + sessions + "</b> " + (sessions === 1 ? "session" : "sessions") + "</span>" +
-    '<span class="chip running"><b>' + (totals.running || 0) + "</b> running</span>" +
-    '<span class="chip waiting"><b>' + (totals.waiting || 0) + "</b> waiting</span>" +
-    '<span class="chip"><b>' + subagents + "</b> " + (subagents === 1 ? "subagent" : "subagents") + "</span>";
+    chip(totals.directories || 0, "dir", "dirs") +
+    chip(totals.sessions || 0, "session", "sessions") +
+    chip(totals.running || 0, "running", "running", "running") +
+    chip(totals.waiting || 0, "waiting", "waiting", "waiting") +
+    chip(totals.subagents || 0, "subagent", "subagents");
 
   document.getElementById("stale").classList.toggle("hidden", !data.monitor.stale);
 }
@@ -1532,13 +1550,12 @@ function updateToday(data) {
   const t = today.tokens || {};
   const total = (Number(t.input) || 0) + (Number(t.output) || 0) + (Number(t.reasoning) || 0);
 
-  document.getElementById("todayDate").textContent = today.date || "";
-  document.getElementById("todayValue").innerHTML = fmtTok(total) + "<small>tok</small>";
+  document.getElementById("todayValue").textContent = fmtTok(total) + " tok";
   document.getElementById("todaySub").textContent =
-    fmtTok(t.input) + " in · " + fmtTok(t.output) + " out · " + fmtTok(t.reasoning) + " reason";
+    "in " + fmtTok(t.input) + "  out " + fmtTok(t.output) + "  reason " + fmtTok(t.reasoning);
   document.getElementById("todayCache").textContent =
-    "cache " + fmtTok(t.cacheRead) + " read · " + fmtMoney(today.cost) +
-    (today.steps ? " · " + today.steps + " steps" : "");
+    "cache " + fmtTok(t.cacheRead) + (today.steps ? "  " + today.steps + " steps" : "");
+  document.getElementById("todayCost").textContent = fmtMoney(today.cost);
 }
 
 /* -------------------------------------------------------------- detail --- */
@@ -1719,6 +1736,9 @@ function closeDetail() {
 }
 
 document.getElementById("detailClose").addEventListener("click", closeDetail);
+addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDetail();
+});
 
 /* ---------------------------------------------------------------- zoom --- */
 
@@ -1781,9 +1801,7 @@ addEventListener("resize", () => {
 /* ---------------------------------------------------------------- poll --- */
 
 function markOffline() {
-  const dot = document.getElementById("liveDot");
-  dot.className = "live-dot offline";
-  document.getElementById("serverInfo").textContent = "monitor offline";
+  setLive("offline", "monitor offline");
   document.getElementById("stale").classList.remove("hidden");
 }
 
