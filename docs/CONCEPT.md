@@ -208,27 +208,27 @@ The page itself is never rewritten. Only `sessions.json` changes.
   "maxSessionTokens": 698150,               // bubble-size denominator
   "directories": [
     {
-      "id": "c:\\users\\yazic\\documents\\knowledgebase",
-      "path": "C:\\Users\\yazic\\Documents\\Knowledgebase",
-      "label": "Knowledgebase",
+      "id": "c:\\users\\you\\projects\\demo-app",
+      "path": "C:\\Users\\you\\Projects\\demo-app",
+      "label": "demo-app",
       "sessionCount": 4,
       "runningCount": 2,
       "waitingCount": 0,
       "sessions": [
         {
-          "id": "ses_e97cf5308ffe3niWO0JuK9L9q1",
-          "shortId": "e97cf530",
+          "id": "ses_0a1b2c3d4ffeAbCdEfGh123456",
+          "shortId": "0a1b2c3d",
           "parentId": null,
           "depth": 0,
-          "name": "Build a powershell script...", // first prompt, truncated (see §6)
+          "name": "Add a dark mode toggle to...", // first prompt, truncated (see §6)
           "slug": "",                           // reserved, currently always empty
           "title": "",                          // reserved, currently always empty
-          "prompt": "Build a powershell script that opens 6 terminals…",
+          "prompt": "Add a dark mode toggle to the settings page…",
           "task": "",                           // description this session was handed by its parent (kept after the handoff)
           "activity": "CONCEPT.md (lines 246-253)",  // running tool's input, short (≤80 chars)
           "activityFull": "C:\\…\\CONCEPT.md (lines 246-253)", // longer form for the panel (≤300 chars)
           "delegations": [                      // running `subagent` calls = active handoffs
-            { "childId": "ses_…", "agent": "critic", "description": "Verify web roster consistency", "startedAt": 1792749390000 }
+            { "childId": "ses_…", "agent": "critic", "description": "Check the settings page tests", "startedAt": 1792749390000 }
           ],
           "agent": "build",
           "model": "opencode/deepseek-v4.1-flash-free",
@@ -309,8 +309,8 @@ is pruned to sessions seen in the last 24 hours.
 First match wins:
 
 1. First user message, whitespace collapsed and cut to 28 characters
-   (`Build a powershell script...`).
-2. `Session e97cf530` — the short id, if no prompt could be fetched.
+   (`Add a dark mode toggle to...`).
+2. `Session 0a1b2c3d` — the short id, if no prompt could be fetched.
 
 The prompt is fetched with `GET /api/session/{id}/message?limit=1&order=asc&type=user`
 when a session is first seen, and again when it starts running if it was still
