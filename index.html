@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenCode · agent monitor</title>
+<title>Agent Monitor</title>
 <style>
   /* Palette follows OpenCode's default dark theme. */
   :root {
@@ -92,6 +92,17 @@
   .live-dot.offline { background: var(--failed); }
   @keyframes blink { to { opacity: .25; } }
   .brand .sub { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+
+  /* source filter: which tool's sessions are on the map */
+  .tabs { display: flex; gap: 2px; pointer-events: auto; }
+  .tabs button {
+    padding: 0 8px; line-height: 20px;
+    border: 1px solid transparent; background: transparent;
+    color: var(--muted); font-size: 11.5px; cursor: pointer;
+  }
+  .tabs button:hover { color: var(--text); border-color: var(--border-hi); }
+  .tabs button.on { color: var(--bg); background: var(--accent); font-weight: 700; }
+  .tabs button em { font-style: normal; opacity: .7; margin-left: 4px; }
 
   .chips { display: flex; gap: 16px; white-space: nowrap; }
   .chip { color: var(--muted); }
@@ -297,6 +308,11 @@
     paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
   }
 
+  /* which tool a root session belongs to */
+  .node .src { font-size: 9px; font-weight: 700; letter-spacing: .04em; fill: var(--muted); }
+  .node .src.src-claude { fill: var(--secondary); }
+  .node .src.src-hermes { fill: var(--task); }
+
   /* sessions and subagents are drawn as faces; labels sit under the face */
   .node.has-face .bubble, .node.has-face .halo { display: none; }
   .node.has-face .name { fill: var(--text); }
@@ -393,15 +409,15 @@
 
 <header id="topbar">
   <div class="brand">
-    <span class="wordmark"><span class="w-open">open</span><span class="w-code">code</span></span>
-    <span class="crumb">/</span><span class="page">agent-monitor</span>
+    <span class="wordmark"><span class="w-open">agent</span><span class="w-code">monitor</span></span>
+    <nav class="tabs" id="tabs" aria-label="session source"></nav>
     <span class="live"><span class="live-dot" id="liveDot"></span><span id="liveText">connecting</span></span>
     <span class="sub" id="serverInfo"></span>
   </div>
   <div class="chips" id="chips"></div>
 </header>
 
-<svg id="stage" aria-label="OpenCode session map"></svg>
+<svg id="stage" aria-label="Agent session map"></svg>
 
 <div id="legend" class="box">
   <span class="box-title">legend</span>
@@ -421,7 +437,7 @@
   <div id="detailBody"></div>
 </aside>
 
-<div id="stale" class="hidden">opencode unreachable · showing last snapshot</div>
+<div id="stale" class="hidden"></div>
 
 <footer id="statusbar">
   <div class="sb-left">
@@ -432,6 +448,7 @@
       <span><kbd>dblclick</kbd> fit</span>
       <span><kbd>click</kbd> inspect</span>
       <span><kbd>esc</kbd> close</span>
+      <span><kbd>1-4</kbd> source</span>
     </span>
   </div>
   <div class="sb-right" id="today" title="Token usage since local midnight. Cache reads are listed separately.">
@@ -551,6 +568,78 @@ function esc(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
+
+/* ------------------------------------------------------------ sources ---- */
+// Sessions from both tools share one map; the filter narrows it to one tool.
+
+const SOURCES = {
+  opencode: { name: "OpenCode", tag: "oc" },
+  claude:   { name: "Claude Code", tag: "cc" },
+  hermes:   { name: "Hermes", tag: "hm" },
+};
+const SOURCE_KEYS = ["all", "opencode", "claude", "hermes"];
+
+function sourceName(source) {
+  return (SOURCES[source || "opencode"] || SOURCES.opencode).name;
+}
+
+let sourceFilter = "all";
+try {
+  const saved = localStorage.getItem("agent-monitor.source");
+  if (SOURCE_KEYS.includes(saved)) sourceFilter = saved;
+} catch (e) { /* storage blocked: start with all */ }
+
+let lastRaw = null;
+
+// The snapshot with only the chosen tool's sessions, and counts to match.
+function applyFilter(data) {
+  const keep = (s) => sourceFilter === "all" || (s.source || "opencode") === sourceFilter;
+  const totals = { directories: 0, sessions: 0, subagents: 0, running: 0, waiting: 0, idle: 0, failed: 0 };
+  const directories = [];
+
+  for (const dir of data.directories || []) {
+    const sessions = (dir.sessions || []).filter(keep);
+    if (!sessions.length) continue;
+
+    let count = 0, running = 0, waiting = 0;
+    const walk = (s) => {
+      count++;
+      if (s.state === "running") running++;
+      else if (s.state === "waiting") waiting++;
+      else if (s.state === "failed") totals.failed++;
+      else totals.idle++;
+      for (const child of s.children || []) walk(child);
+    };
+    for (const s of sessions) { totals.sessions++; walk(s); }
+
+    totals.subagents += count;
+    totals.running += running;
+    totals.waiting += waiting;
+    directories.push(Object.assign({}, dir, {
+      sessions, sessionCount: count, runningCount: running, waitingCount: waiting,
+    }));
+  }
+
+  totals.directories = directories.length;
+  totals.subagents -= totals.sessions;
+  return Object.assign({}, data, { directories, totals });
+}
+
+function setSourceFilter(key) {
+  if (!SOURCE_KEYS.includes(key) || key === sourceFilter) return;
+  sourceFilter = key;
+  try { localStorage.setItem("agent-monitor.source", key); } catch (e) { /* not remembered */ }
+  if (lastRaw) {
+    updateTabs(lastRaw);
+    render(applyFilter(lastRaw));
+    setTimeout(() => fitView(), 450);
+  }
+}
+
+document.getElementById("tabs").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-source]");
+  if (button) setSourceFilter(button.getAttribute("data-source"));
+});
 
 /* ------------------------------------------------------------ flatten ---- */
 
@@ -684,7 +773,7 @@ function tooltipText(d) {
     s.activityFull ? "now: " + s.activityFull : "",
     s.task ? "task: " + s.task : "",
     fmtTok(s.tokens && s.tokens.total) + " tokens · " + fmtMoney(s.cost),
-    s.model || "",
+    sourceName(s.source) + (s.model ? " · " + s.model : ""),
     d.dir ? d.dir.dirData.path : "",
     s.id,
   ].filter(Boolean).join("\n");
@@ -700,8 +789,9 @@ function resolveHandoffs(nodes, byId) {
 
   for (const n of nodes) {
     if (n.kind === "directory") continue;
+    // No check on the parent's own state: a Claude Code session can sit idle
+    // while a background subagent it launched is still working.
     const s = n.data;
-    if (s.state !== "running" && s.state !== "waiting") continue;
 
     const used = new Set();
     for (const del of s.delegations || []) {
@@ -1381,6 +1471,7 @@ function render(data) {
   entering.append("text").attr("class", "meta").attr("text-anchor", "middle");
   entering.append("text").attr("class", "tok").attr("text-anchor", "middle");
   entering.append("text").attr("class", "act").attr("text-anchor", "middle");
+  entering.append("text").attr("class", "src").attr("text-anchor", "end");
   entering.append("title");
 
   entering.transition().duration(320).style("opacity", 1);
@@ -1421,6 +1512,14 @@ function render(data) {
     .attr("font-size", 9.5)
     .style("display", (d) => d.kind === "subagent" ? "none" : null)
     .text((d) => labelParts(d)[2]);
+
+  // A small tag on the lower left of each top-level face: oc = OpenCode, cc = Claude Code.
+  nodeSel.select("text.src")
+    .attr("class", (d) => "src" + (d.kind === "session" ? " src-" + (d.data.source || "opencode") : ""))
+    .attr("x", (d) => -d.r * 0.72)
+    .attr("y", (d) => d.r * 0.98)
+    .style("display", (d) => d.kind === "session" ? null : "none")
+    .text((d) => d.kind === "session" ? SOURCES[d.data.source || "opencode"].tag : "");
 
   nodeSel.select("title").text(tooltipText);
 
@@ -1522,14 +1621,60 @@ function setLive(mode, text) {
   badge.textContent = mode === "live" ? "LIVE" : mode === "stale" ? "STALE" : "OFFLINE";
 }
 
+// Sources that cannot be read right now, among the ones the filter shows.
+function sourceProblems(data) {
+  const sources = data.sources || {};
+  const problems = [];
+  const text = {
+    opencode: "opencode unreachable",
+    claude: "claude code sessions unreadable",
+    hermes: "hermes database unreadable",
+  };
+  for (const key of ["opencode", "claude", "hermes"]) {
+    const src = sources[key];
+    if (!src || src.enabled === false || src.ok) continue;
+    if (sourceFilter !== "all" && sourceFilter !== key) continue;
+    problems.push(text[key]);
+  }
+  return problems;
+}
+
+function updateTabs(raw) {
+  const counts = { all: 0, opencode: 0, claude: 0, hermes: 0 };
+  for (const dir of raw.directories || []) {
+    for (const s of dir.sessions || []) {
+      counts.all++;
+      counts[s.source || "opencode"]++;
+    }
+  }
+  const tab = (key, label) =>
+    '<button data-source="' + key + '" class="' + (sourceFilter === key ? "on" : "") + '">' +
+    label + "<em>" + counts[key] + "</em></button>";
+  document.getElementById("tabs").innerHTML =
+    tab("all", "all") + tab("opencode", "opencode") + tab("claude", "claude code") + tab("hermes", "hermes");
+}
+
 function updateChrome(data) {
-  setLive(data.monitor.stale ? "stale" : "live", data.monitor.stale ? "stale" : "live");
+  const problems = sourceProblems(data);
+  const mode = data.monitor.stale ? "stale" : problems.length ? "stale" : "live";
+  setLive(mode, mode === "live" ? "live" : problems.length ? "partial" : "stale");
 
   const server = data.server || {};
   const bits = [];
-  if (server.version) bits.push("v" + server.version);
-  if (server.url) bits.push(server.url.replace(/^https?:\/\//, ""));
-  if (typeof server.latencyMs === "number" && server.healthy) bits.push(server.latencyMs + "ms");
+  const showing = (key) => sourceFilter === "all" || sourceFilter === key;
+  if (showing("opencode") && data.sources && data.sources.opencode && data.sources.opencode.ok) {
+    if (server.version) bits.push("opencode v" + server.version);
+    if (server.url) bits.push(server.url.replace(/^https?:\/\//, ""));
+    if (typeof server.latencyMs === "number" && server.healthy) bits.push(server.latencyMs + "ms");
+  }
+  const claude = data.sources && data.sources.claude;
+  if (showing("claude") && claude && claude.ok) {
+    bits.push("claude code " + claude.live + " open");
+  }
+  const hermes = data.sources && data.sources.hermes;
+  if (showing("hermes") && hermes && hermes.ok && hermes.databases) {
+    bits.push("hermes " + hermes.databases + " db" + (hermes.databases === 1 ? "" : "s"));
+  }
   document.getElementById("serverInfo").textContent = bits.join("  ");
 
   const totals = data.totals || {};
@@ -1542,20 +1687,51 @@ function updateChrome(data) {
     chip(totals.waiting || 0, "waiting", "waiting", "waiting") +
     chip(totals.subagents || 0, "subagent", "subagents");
 
-  document.getElementById("stale").classList.toggle("hidden", !data.monitor.stale);
+  const banner = document.getElementById("stale");
+  banner.textContent = problems.join(" · ") + (problems.length ? " · showing last snapshot" : "");
+  banner.classList.toggle("hidden", !problems.length);
 }
 
 function updateToday(data) {
-  const today = data.today || {};
-  const t = today.tokens || {};
-  const total = (Number(t.input) || 0) + (Number(t.output) || 0) + (Number(t.reasoning) || 0);
+  // Daily totals of the sources the filter shows. Claude Code input counts
+  // cache writes too: its prompts are mostly served through the cache.
+  const parts = [];
+  const showing = (key) => sourceFilter === "all" || sourceFilter === key;
+  if (showing("opencode") && data.today) parts.push(["opencode", data.today]);
+  if (showing("claude") && data.claudeToday) parts.push(["claude", data.claudeToday]);
+  if (showing("hermes") && data.hermesToday) parts.push(["hermes", data.hermesToday]);
+
+  const sum = { input: 0, output: 0, reasoning: 0, cacheRead: 0 };
+  let steps = 0;
+  let cost = 0;
+  const bySource = [];
+  for (const [key, today] of parts) {
+    const t = today.tokens || {};
+    const input = (Number(t.input) || 0) + (key === "claude" ? Number(t.cacheWrite) || 0 : 0);
+    const total = input + (Number(t.output) || 0) + (Number(t.reasoning) || 0);
+    sum.input += input;
+    sum.output += Number(t.output) || 0;
+    sum.reasoning += Number(t.reasoning) || 0;
+    sum.cacheRead += Number(t.cacheRead) || 0;
+    steps += Number(today.steps) || 0;
+    if (key !== "claude") cost += Number(today.cost) || 0;
+    bySource.push(SOURCES[key].tag + " " + fmtTok(total));
+  }
+  const total = sum.input + sum.output + sum.reasoning;
 
   document.getElementById("todayValue").textContent = fmtTok(total) + " tok";
   document.getElementById("todaySub").textContent =
-    "in " + fmtTok(t.input) + "  out " + fmtTok(t.output) + "  reason " + fmtTok(t.reasoning);
+    (bySource.length > 1 ? bySource.join("  ") + "  " : "") +
+    "in " + fmtTok(sum.input) + "  out " + fmtTok(sum.output) + "  reason " + fmtTok(sum.reasoning);
   document.getElementById("todayCache").textContent =
-    "cache " + fmtTok(t.cacheRead) + (today.steps ? "  " + today.steps + " steps" : "");
-  document.getElementById("todayCost").textContent = fmtMoney(today.cost);
+    "cache " + fmtTok(sum.cacheRead) + (steps ? "  " + steps + " steps" : "");
+  // Claude Code writes no per-day cost, so the figure leaves it out.
+  const costEl = document.getElementById("todayCost");
+  const priced = parts.filter(([key]) => key !== "claude").map(([key]) => SOURCES[key].tag);
+  costEl.textContent = !priced.length ? "" :
+    fmtMoney(cost) + (priced.length < parts.length || priced.length > 1 ? " " + priced.join("+") : "");
+  costEl.title = "Cost of " + (priced.map((t) => t === "oc" ? "OpenCode" : "Hermes").join(" and ") || "nothing") +
+    ". Claude Code writes no daily cost.";
 }
 
 /* -------------------------------------------------------------- detail --- */
@@ -1606,6 +1782,7 @@ function sessionRows(d) {
   }
 
   const rows = [
+    ["source", esc(sourceName(s.source) + (s.platform ? " · " + s.platform : ""))],
     ["id", '<span class="mono">' + esc(s.id) + '</span><button class="copy-btn" data-copy="' + esc(s.id) + '" title="Copy session ID">' + copyIconSvg + "</button>"],
     ["agent", esc(s.agent || "—")],
     ["model", '<span class="mono">' + esc(s.model || "—") + "</span>"],
@@ -1629,7 +1806,10 @@ function sessionRows(d) {
     "<div><b>" + fmtTok(t.output) + "</b><span>output</span></div>" +
     "<div><b>" + fmtTok(t.reasoning) + "</b><span>reasoning</span></div>" +
     "<div><b>" + fmtTok(t.cacheRead) + "</b><span>cache rd</span></div>" +
-    "<div><b>" + fmtMoney(s.cost) + "</b><span>cost</span></div>" +
+    (s.source === "claude"
+      ? "<div><b>" + fmtTok(t.cacheWrite) + "</b><span>cache wr</span></div>" +
+        "<div><b>" + (s.cost ? fmtMoney(s.cost) : "—") + "</b><span>cost</span></div>"
+      : "<div><b>" + fmtMoney(s.cost) + "</b><span>cost</span></div>") +
     "</div>";
 
   if (s.prompt) {
@@ -1661,6 +1841,7 @@ function directoryRows(d) {
 
   html += "<dl>";
   html += '<dt>path</dt><dd class="mono small d-path">' + esc(dir.path) + '<button class="copy-btn" data-copy="' + esc(dir.path) + '" title="Copy path">' + copyIconSvg + "</button></dd>";
+  html += "<dt>used by</dt><dd>" + esc((dir.sources || ["opencode"]).map(sourceName).join(", ")) + "</dd>";
   html += "<dt>sessions</dt><dd>" + dir.sessionCount + "</dd>";
   html += "<dt>running</dt><dd>" + dir.runningCount + "</dd>";
   html += "<dt>waiting</dt><dd>" + (dir.waitingCount || 0) + "</dd>";
@@ -1738,6 +1919,9 @@ function closeDetail() {
 document.getElementById("detailClose").addEventListener("click", closeDetail);
 addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeDetail();
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const index = ["1", "2", "3", "4"].indexOf(event.key);
+  if (index >= 0) setSourceFilter(SOURCE_KEYS[index]);
 });
 
 /* ---------------------------------------------------------------- zoom --- */
@@ -1802,7 +1986,9 @@ addEventListener("resize", () => {
 
 function markOffline() {
   setLive("offline", "monitor offline");
-  document.getElementById("stale").classList.remove("hidden");
+  const banner = document.getElementById("stale");
+  banner.textContent = "monitor offline · showing last snapshot";
+  banner.classList.remove("hidden");
 }
 
 async function poll() {
@@ -1812,7 +1998,9 @@ async function poll() {
     const res = await fetch("/sessions.json?t=" + Date.now(), { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
-    render(data);
+    lastRaw = data;
+    updateTabs(data);
+    render(applyFilter(data));
   } catch (err) {
     markOffline();
     delay = 1500;

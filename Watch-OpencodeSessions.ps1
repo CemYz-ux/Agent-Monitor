@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Live bubble dashboard for OpenCode sessions.
+    Live bubble dashboard for OpenCode and Claude Code sessions.
 
 .DESCRIPTION
     Polls the local OpenCode background service once per second, writes
@@ -34,6 +34,34 @@
 .PARAMETER Port
     First loopback port to try. Default 8787. If busy, the next ports are tried.
 
+.PARAMETER ClaudeHours
+    Claude Code sessions written to in the last N hours are shown. Default 24.
+
+.PARAMETER ClaudeLimit
+    Maximum number of Claude Code sessions to show. Default 40.
+
+.PARAMETER ClaudeSubagentLimit
+    Finished subagents shown per Claude Code session (running ones always show). Default 12.
+
+.PARAMETER NoClaude
+    Do not read Claude Code sessions.
+
+.PARAMETER HermesIntervalMs
+    How often Hermes Agent databases are queried. Default 2000.
+
+.PARAMETER HermesLimit
+    Maximum number of Hermes sessions (subagents included) per database. Default 100.
+
+.PARAMETER HermesActiveMs
+    A Hermes session whose newest message is a prompt or tool result this
+    recent counts as working. Default 120000.
+
+.PARAMETER HermesWsl
+    Also look for a Hermes database inside the default WSL distro.
+
+.PARAMETER NoHermes
+    Do not read Hermes Agent sessions.
+
 .PARAMETER NoBrowser
     Do not open the dashboard in the default browser.
 
@@ -60,6 +88,30 @@ param(
 
     [ValidateRange(1, 65535)]
     [int]$Port = 8787,
+
+    [ValidateRange(1, 720)]
+    [int]$ClaudeHours = 24,
+
+    [ValidateRange(1, 200)]
+    [int]$ClaudeLimit = 40,
+
+    [ValidateRange(0, 200)]
+    [int]$ClaudeSubagentLimit = 12,
+
+    [switch]$NoClaude,
+
+    [ValidateRange(500, 600000)]
+    [int]$HermesIntervalMs = 2000,
+
+    [ValidateRange(1, 1000)]
+    [int]$HermesLimit = 100,
+
+    [ValidateRange(5000, 3600000)]
+    [int]$HermesActiveMs = 120000,
+
+    [switch]$HermesWsl,
+
+    [switch]$NoHermes,
 
     [switch]$NoBrowser,
 
@@ -363,7 +415,7 @@ function Get-ToolSummary {
         }
     }
 
-    $path = [string](Get-Field $toolInput 'path' (Get-Field $toolInput 'filePath' (Get-Field $toolInput 'file' '')))
+    $path = [string](Get-Field $toolInput 'path' (Get-Field $toolInput 'filePath' (Get-Field $toolInput 'file_path' (Get-Field $toolInput 'notebook_path' (Get-Field $toolInput 'file' '')))))
     $command = [string](Get-Field $toolInput 'command' '')
     $pattern = [string](Get-Field $toolInput 'pattern' '')
     $url = [string](Get-Field $toolInput 'url' '')
@@ -833,6 +885,7 @@ function Update-Snapshot {
             shortId       = (Get-ShortId $Node.id)
             parentId      = $(if ([string]::IsNullOrWhiteSpace($Node.parentId)) { $null } else { $Node.parentId })
             depth         = $Depth
+            source        = 'opencode'
             name          = $Node.name
             slug          = $Node.slug
             title         = $Node.title
@@ -960,6 +1013,114 @@ function Publish-Snapshot {
             $Snapshot.totals.directories, $Snapshot.totals.sessions, $Snapshot.totals.running, `
             $Snapshot.totals.waiting, $todayTotal)
     }
+}
+
+# ------------------------------------------------------------ claude code --
+
+. (Join-Path $PSScriptRoot 'ClaudeSessions.ps1')
+. (Join-Path $PSScriptRoot 'HermesSessions.ps1')
+
+function Measure-SessionTree {
+    param($Session, $Totals)
+
+    $Totals.all++
+    switch ([string]$Session.state) {
+        'running' { $Totals.running++ }
+        'waiting' { $Totals.waiting++ }
+        'failed'  { $Totals.failed++ }
+    }
+    foreach ($child in @($Session.children)) { Measure-SessionTree -Session $child -Totals $Totals }
+}
+
+function Merge-Snapshots {
+    # One map for both tools: a project folder used by OpenCode and Claude Code
+    # becomes one directory bubble holding the sessions of both.
+    param($Opencode, [string]$OpencodeError, $Claude, [string]$ClaudeError, $Hermes, [string]$HermesError)
+
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $merged = [ordered]@{}
+
+    $sets = @()
+    if ($Opencode) { $sets += ,@{ Source = 'opencode'; Dirs = @($Opencode.directories) } }
+    if ($Claude) { $sets += ,@{ Source = 'claude'; Dirs = @($Claude.directories) } }
+    if ($Hermes) { $sets += ,@{ Source = 'hermes'; Dirs = @($Hermes.directories) } }
+
+    foreach ($set in $sets) {
+        foreach ($dir in $set.Dirs) {
+            if (-not $dir) { continue }
+            $key = [string]$dir.id
+            if (-not $merged.Contains($key)) {
+                $merged[$key] = @{
+                    id = $key; path = $dir.path; label = $dir.label
+                    sessionCount = 0; runningCount = 0; waitingCount = 0
+                    sources = (New-Object System.Collections.ArrayList)
+                    sessions = (New-Object System.Collections.ArrayList)
+                }
+            }
+            $target = $merged[$key]
+            $target.sessionCount += [int]$dir.sessionCount
+            $target.runningCount += [int]$dir.runningCount
+            $target.waitingCount += [int]$dir.waitingCount
+            if (-not $target.sources.Contains($set.Source)) { [void]$target.sources.Add($set.Source) }
+            foreach ($session in @($dir.sessions)) { [void]$target.sessions.Add($session) }
+        }
+    }
+
+    $totals = @{ all = 0; roots = 0; running = 0; waiting = 0; failed = 0 }
+    $directories = New-Object System.Collections.ArrayList
+    foreach ($dir in $merged.Values) {
+        if ($dir.sources.Count -gt 1) {
+            $dir.sessions = @($dir.sessions | Sort-Object -Property @{ Expression = { Get-StateRank $_.state } }, @{ Expression = { $_.updatedAt }; Descending = $true })
+        }
+        foreach ($session in $dir.sessions) {
+            $totals.roots++
+            Measure-SessionTree -Session $session -Totals $totals
+        }
+        [void]$directories.Add($dir)
+    }
+    $directories = @($directories | Sort-Object -Property label)
+
+    $base = $Opencode
+    if (-not $base) { $base = Get-StaleSnapshot -ErrorText $OpencodeError -Now $now }
+    $snapshot = $base.Clone()
+
+    $ocOk = $Opencode -and -not $OpencodeError -and -not $Opencode.monitor.stale
+    $ccOk = $Claude -and -not $ClaudeError
+    $hmOk = $Hermes -and -not $HermesError
+
+    $maxTokens = [long]$base.maxSessionTokens
+    if ($Claude -and $Claude.maxTokens -gt $maxTokens) { $maxTokens = $Claude.maxTokens }
+    if ($Hermes -and $Hermes.maxTokens -gt $maxTokens) { $maxTokens = $Hermes.maxTokens }
+
+    $snapshot.schemaVersion = 2
+    $snapshot.generatedAt = $now
+    $snapshot.generatedAtIso = [DateTimeOffset]::FromUnixTimeMilliseconds($now).ToString('o')
+    $snapshot.monitor = @{
+        pid = $PID; startedAt = $script:StartedAt; slowUpdatedAt = $script:LastSlow
+        stale = -not ($ocOk -or $ccOk -or $hmOk)
+        error = $(if ($OpencodeError) { $OpencodeError } elseif ($ClaudeError) { $ClaudeError } else { $HermesError })
+    }
+    $snapshot.sources = @{
+        opencode = @{ enabled = $true; ok = [bool]$ocOk; error = $OpencodeError }
+        claude   = @{ enabled = -not $NoClaude; ok = [bool]$ccOk; error = $ClaudeError; live = $(if ($Claude) { $Claude.live } else { 0 }) }
+        hermes   = @{ enabled = -not $NoHermes; ok = [bool]$hmOk; error = $HermesError; databases = $(if ($Hermes) { $Hermes.databases } else { 0 }) }
+    }
+    $snapshot.totals = @{
+        directories = $directories.Count
+        sessions    = $totals.roots
+        subagents   = $totals.all - $totals.roots
+        running     = $totals.running
+        waiting     = $totals.waiting
+        idle        = $totals.all - $totals.running - $totals.waiting - $totals.failed
+        failed      = $totals.failed
+    }
+    $snapshot.today = $script:Today
+    $snapshot.claudeToday = $(if ($Claude) { $Claude.today } else { $null })
+    $snapshot.hermesToday = $(if ($Hermes) { $Hermes.today } else { $null })
+    $snapshot.maxSessionTokens = $maxTokens
+    $snapshot.directories = $directories
+
+    return $snapshot
 }
 
 # ----------------------------------------------------------- http server ----
@@ -1115,37 +1276,65 @@ try {
         $script:Tick++
         $tickStart = Get-Date
 
+        # Each source fails on its own: one being down never hides the other.
+        $opencode = $null
+        $opencodeError = $null
         try {
             if (-not $script:Service) { Connect-Service }
-            $snapshot = Update-Snapshot
-            Publish-Snapshot -Snapshot $snapshot
-
-            if (-not $Once) {
-                # Slow lane, after the snapshot has been published. The next tick
-                # picks up the new daily totals.
-                $slowNow = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-
-                if (($slowNow - $script:LastStats) -ge $TokenIntervalMs) {
-                    try { Update-TodayStats } catch { }
-                    $script:LastStats = $slowNow
-                    $script:LastSlow = $slowNow
-                }
-            }
+            $opencode = Update-Snapshot
         }
         catch {
-            $script:LastError = $_.Exception.Message
+            $opencodeError = $_.Exception.Message
+            $script:LastError = $opencodeError
             # Re-read service.json so a restarted service is picked up next tick.
             try { Connect-Service } catch { }
-            $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-            $stale = Get-StaleSnapshot -ErrorText $script:LastError -Now $now
+            $opencode = Get-StaleSnapshot -ErrorText $opencodeError -Now ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+            if ($script:Tick % 30 -eq 1) { Write-Log "OpenCode unreachable: $opencodeError" 'warn' }
+        }
 
+        $claude = $null
+        $claudeError = $null
+        if (-not $NoClaude) {
             try {
-                Write-Utf8File -Path $script:DataPath -Text (($stale | ConvertTo-Json -Depth 20 -Compress))
+                $claude = Update-ClaudeSnapshot
             }
-            catch { }
+            catch {
+                $claudeError = $_.Exception.Message
+                $claude = $script:CC.LastResult
+                if ($script:Tick % 30 -eq 1) { Write-Log "Claude Code sessions unreadable: $claudeError" 'warn' }
+            }
+        }
 
-            if ($script:Tick % 10 -eq 1) {
-                Write-Log "OpenCode unreachable: $($script:LastError)" 'warn'
+        $hermes = $null
+        $hermesError = $null
+        if (-not $NoHermes) {
+            try {
+                $hermes = Update-HermesSnapshot
+                $hermesError = $hermes.error
+            }
+            catch {
+                $hermesError = $_.Exception.Message
+                $hermes = $script:HM.LastResult
+            }
+            if ($hermesError -and $script:Tick % 30 -eq 1) { Write-Log "Hermes sessions unreadable: $hermesError" 'warn' }
+        }
+
+        try {
+            Publish-Snapshot -Snapshot (Merge-Snapshots -Opencode $opencode -OpencodeError $opencodeError -Claude $claude -ClaudeError $claudeError -Hermes $hermes -HermesError $hermesError)
+        }
+        catch {
+            Write-Log "Snapshot not written: $($_.Exception.Message)" 'error'
+        }
+
+        if (-not $Once -and -not $opencodeError) {
+            # Slow lane, after the snapshot has been published. The next tick
+            # picks up the new daily totals.
+            $slowNow = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+
+            if (($slowNow - $script:LastStats) -ge $TokenIntervalMs) {
+                try { Update-TodayStats } catch { }
+                $script:LastStats = $slowNow
+                $script:LastSlow = $slowNow
             }
         }
 
