@@ -1,8 +1,10 @@
 # Agent Monitoring — concept & implementation notes
 
-A live, local dashboard for OpenCode. One PowerShell process polls the OpenCode
-background service, writes a JSON snapshot, serves a static D3 page over a
-loopback HTTP server, and opens that page in the browser.
+A live, local dashboard for OpenCode, Claude Code and Hermes Agent. One
+PowerShell process polls the OpenCode background service, reads Claude Code's
+session files and Hermes Agent's SQLite database, writes one merged JSON snapshot,
+serves a static D3 page over a loopback HTTP server, and opens that page in the
+browser.
 
 Session data never leaves the machine; the only outbound request is the browser
 loading D3 from jsDelivr. No build step, no npm install, no cloud service.
@@ -14,6 +16,9 @@ loading D3 from jsDelivr. No build step, no npm install, no cloud service.
 ```
 Agent-Monitor/
   Watch-OpencodeSessions.ps1      the collector, HTTP server, and lifecycle
+  ClaudeSessions.ps1              Claude Code collector, dot-sourced by the script above
+  HermesSessions.ps1              Hermes Agent collector, dot-sourced by the script above
+  tools/hermes-query.py           read-only SQLite helper for a Hermes database inside WSL
   index.html                      the D3 dashboard (D3 v7.9.0 loaded from jsDelivr)
   smiley-prototype.html           prototype view, served at /smiley
   sessions.json                   generated — machine-readable snapshot (every second)
@@ -57,6 +62,61 @@ Two quirks shaped the design:
 The service occasionally blocks `/api/session` for several seconds while an
 agent turn is being processed. The monitor uses a 4-second HTTP timeout, does not
 retry timeouts, and keeps the last snapshot on failure instead of crashing.
+
+### What Claude Code gives us
+
+Claude Code has no service to poll, so the monitor reads its files
+(verified against Claude Code 2.1.316):
+
+| Need | Source |
+|---|---|
+| Which sessions are open, busy or idle | `%USERPROFILE%\.claude\sessions\<pid>.json` (`sessionId`, `status`, `cwd`); kept only if the pid is alive |
+| Transcript | `%USERPROFILE%\.claude\projects\<dir>\<sessionId>.jsonl` |
+| Subagents | `<sessionId>\subagents\agent-<id>.jsonl` plus `agent-<id>.meta.json` (`agentType`, `description`, `toolUseId`, `finished`) |
+| Current tool | `tool_use` blocks in assistant lines with no matching `tool_result` yet |
+| Tokens | `message.usage` on assistant lines, counted once per message id |
+| Cost | the latest `cost-state` line, when the session wrote one |
+
+Transcripts can be several megabytes and include large request dumps. Each file
+is read once, then only the bytes appended since the previous tick are parsed;
+`api-request*`, `file-history` and `queue-operation` lines are skipped unparsed.
+Sessions written to in the last `-ClaudeHours` (24) are shown, plus every open
+one. A subagent's parent is the transcript whose `Agent` call has the
+subagent's `toolUseId`, so nested subagents nest on the map too.
+
+Both tools' sessions go into the same snapshot. Each session has
+`source: "opencode" | "claude"`, and a project folder used by both becomes one
+directory bubble with `sources: ["opencode", "claude"]`. Either source can fail
+on its own; `sources.<name>.ok` says which one is down. Claude Code's daily
+totals are in `claudeToday` (no cost: Claude Code writes none per day).
+
+### What Hermes Agent gives us
+
+Written from the Hermes docs (schema version 31), not yet checked against a real
+install. Hermes keeps everything in one SQLite database in WAL mode:
+`%LOCALAPPDATA%\hermes\state.db` on Windows, `~/.hermes/state.db` on Linux and
+WSL, `HERMES_HOME` overriding both, and `profiles/<name>/state.db` per profile.
+
+| Need | Source |
+|---|---|
+| Sessions | `sessions` (`id`, `source` = platform, `model`, `title`, `cwd`, `started_at`, `ended_at`, `end_reason`, token and cost columns) |
+| Subagents | sessions with `source = 'subagent'`; the parent is `model_config._delegate_from` (`parent_session_id` is compression lineage, not delegation) |
+| Current tool | the newest message: an assistant row with `tool_calls` (OpenAI-style JSON) is a tool still running |
+| Name | `title`, else the first user message |
+| Today | sums over sessions started since midnight |
+
+Timestamps are Unix seconds (floats). Hermes has no running flag, and
+`ended_at` stays empty for runs that died, so the state is inferred: ended
+sessions are idle (or failed / interrupted by `end_reason`); open ones are
+working while their newest message is a tool call under 10 minutes old, or a
+prompt or tool result newer than `-HermesActiveMs`; otherwise idle.
+
+A native database is opened read-only through Windows' `winsqlite3.dll` via a
+small P/Invoke class, so no SQLite install is needed. A WSL database
+(`-HermesWsl`) is queried by `tools/hermes-query.py` under WSL's `python3`, one
+process per poll, with the same SQL. Queries only name columns the database
+actually has (`pragma_table_info`), so older or newer schemas still work. Sessions
+with no `cwd` (chat platforms, cron) go into a `hermes://<platform>` directory.
 
 ---
 
